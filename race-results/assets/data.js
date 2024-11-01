@@ -1,6 +1,5 @@
 // data.js
-window.raceData = {
-    // Copier ici le contenu du race_data.json
+window.raceData =
 
 
 
@@ -11087,5 +11086,4 @@ window.raceData = {
             }
         ]
     }
-}
 };
