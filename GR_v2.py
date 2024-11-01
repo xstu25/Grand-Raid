@@ -44,8 +44,8 @@ class RaceDataScraper:
     def get_race_from_url(self, driver):
         """Récupère le code de la course depuis l'URL"""
         try:
-            # Attendre que l'URL soit mise à jour avec le raceId
-            time.sleep(6)  # Attendre un peu plus pour être sûr
+            # Attendre que l'URL soit mise à jour avec le raceId avec un timeout plus court
+            time.sleep(2)
             current_url = driver.current_url
             print(f"URL courante: {current_url}")
 
@@ -57,6 +57,15 @@ class RaceDataScraper:
                 print(f"Course trouvée: {race_name} ({race_code})")
                 return race_name
             else:
+                # Si pas de raceId dans l'URL, on peut essayer de déduire la course
+                # depuis les informations de la page
+                try:
+                    race_info = driver.find_element(By.CLASS_NAME, "mui-oah8u0").text
+                    for code, name in self.race_names.items():
+                        if name.lower() in race_info.lower():
+                            return name
+                except:
+                    pass
                 print("Code course non trouvé dans l'URL")
                 return "Course inconnue"
         except Exception as e:
@@ -116,19 +125,9 @@ class RaceDataScraper:
         except:
             return None, None
 
-    def get_checkpoint_data(self, bib_number):
+    def get_checkpoint_data(self, driver):
         """Extraire les données des points de passage pour un coureur"""
         try:
-            # Nouvelle URL pour les données détaillées
-            url = f"https://grandraid-reunion-oxybol.v3.livetrail.net/fr/2024/runners/{bib_number}"
-            self.driver.get(url)
-            time.sleep(2)  # Attendre le chargement de la page
-
-            # Attendre que le tableau soit chargé
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "MuiTableContainer-root"))
-            )
-
             checkpoints = []
             rows = driver.find_elements(By.CLASS_NAME, "MuiTableRow-root")
 
@@ -218,23 +217,23 @@ class RaceDataScraper:
 
                                 # Tentative d'extraction de l'évolution (positive ou négative)
                                 try:
-                                    # Chercher d'abord l'évolution positive
-                                    evolution_element = cell.find_element(By.CLASS_NAME, "mui-2e3q6l")
-                                    evolution_text = evolution_element.text.strip()
-                                except:
-                                    try:
-                                        # Si pas d'évolution positive, chercher l'évolution négative
-                                        evolution_element = cell.find_element(By.CLASS_NAME, "mui-1duggqj")
-                                        evolution_text = evolution_element.text.strip()
-                                    except:
-                                        evolution_text = ""
+                                    evolution_element = None
+                                    for class_name in ["mui-2e3q6l", "mui-1duggqj"]:
+                                        try:
+                                            evolution_element = cell.find_element(By.CLASS_NAME, class_name)
+                                            break
+                                        except:
+                                            continue
 
-                                if evolution_text:
-                                    # Extraire le nombre de l'évolution (enlever les parenthèses)
-                                    evolution_match = re.search(r'[+-]?\d+',
-                                                                evolution_text.replace('(', '').replace(')', ''))
-                                    if evolution_match:
-                                        evolution = int(evolution_match.group())
+                                    if evolution_element:
+                                        evolution_text = evolution_element.text.strip()
+                                        evolution_match = re.search(r'[+-]?\d+',
+                                                                    evolution_text.replace('(', '').replace(')',
+                                                                                                            ''))
+                                        if evolution_match:
+                                            evolution = int(evolution_match.group())
+                                except:
+                                    evolution = None
                                 break
                             except:
                                 continue
@@ -275,21 +274,24 @@ class RaceDataScraper:
                        if unicodedata.category(c) != 'Mn')
 
     def get_runner_data(self, bib_number):
+        """Récupère les données complètes d'un coureur"""
         bib_str = str(bib_number)
         print(f"\nTraitement du dossard {bib_number}")
 
+        # Vérifier si les données sont en cache
         if bib_str in self.all_data:
             print(f"Données trouvées en cache pour le dossard {bib_number}")
             return self.all_data[bib_str]
 
         print(f"Récupération des données en ligne pour le dossard {bib_number}")
         try:
+            # Initialisation du driver et chargement de la page
             driver = self.initialize_driver()
             url = f"https://grandraid-reunion-oxybol.v3.livetrail.net/fr/2024/runners/{bib_number}"
             driver.get(url)
-            time.sleep(4)
+            time.sleep(1)
 
-            # Initialiser les variables par défaut
+            # Initialisation des variables par défaut
             name = "Inconnu"
             category = "Inconnue"
             avg_speed = "N/A"
@@ -297,77 +299,58 @@ class RaceDataScraper:
             finish_time = "-"
             rankings = {"Général": "", "Sexe": "", "Catégorie": ""}
 
-            # Récupérer le nom de la course
+            # Récupération du nom de la course
             race_name = self.get_race_from_url(driver)
 
-            # Récupérer le nom du coureur
+            # Récupération du nom du coureur
             try:
                 name_element = driver.find_element(By.CLASS_NAME, "mui-oah8u0")
                 name = name_element.text.strip()
             except:
                 print(f"Erreur lors de la récupération du nom pour le dossard {bib_number}")
 
-            # Récupérer la catégorie
+            # Récupération de la catégorie
             try:
                 category_element = driver.find_element(By.CLASS_NAME, "mui-1vu7he5")
                 category = category_element.text.strip()
             except:
                 print(f"Erreur lors de la récupération de la catégorie pour le dossard {bib_number}")
 
-            # Récupérer la vitesse moyenne
-            try:
-                speed_elements = driver.find_elements(By.CLASS_NAME, "mui-8v90jo")
-                for element in speed_elements:
-                    try:
-                        label = element.find_element(By.CLASS_NAME, "mui-wenrje").text.strip()
-                        if "Vit. moy." in label:
-                            speed_value = element.find_element(By.CLASS_NAME, "mui-n2g1ua").text.strip()
-                            avg_speed = speed_value  # Garder la valeur complète (ex: "3.8 km/h")
-                            break
-                    except:
-                        continue
-            except:
-                print(f"Erreur lors de la récupération de la vitesse moyenne pour le dossard {bib_number}")
-                avg_speed = "N/A"
-
-            # Récupérer l'état et le temps total
+            # Récupération de l'état et du temps
             try:
                 print("Recherche de l'état du coureur...")
+                raw_state = "Inconnu"
 
-                # Essayer de trouver un finisher
+                # Chercher Finisher
                 try:
                     state_container = driver.find_element(By.CLASS_NAME, "mui-w9oezj")
                     state_element = state_container.find_element(By.CSS_SELECTOR, "p.MuiTypography-noWrap")
                     raw_state = state_element.text.strip()
                     print(f"État trouvé dans mui-w9oezj: {raw_state}")
                 except:
-                    # Essayer de trouver un abandon
+                    # Chercher Abandon ou Non partant
                     try:
                         state_container = driver.find_element(By.CLASS_NAME, "mui-gzldy9")
-                        state_element = state_container.find_element(By.CLASS_NAME, "mui-1xavr8a")
-                        raw_state = state_element.text.strip()
-                        print(f"État trouvé dans mui-gzldy9 (abandon): {raw_state}")
-                    except:
-                        # Essayer de trouver un non partant
                         try:
-                            state_container = driver.find_element(By.CLASS_NAME, "mui-gzldy9")
+                            state_element = state_container.find_element(By.CLASS_NAME, "mui-1xavr8a")
+                            raw_state = state_element.text.strip()
+                            print(f"État trouvé dans mui-gzldy9 (abandon): {raw_state}")
+                        except:
                             state_element = state_container.find_element(By.CLASS_NAME, "mui-evvpi6")
                             raw_state = state_element.text.strip()
                             print(f"État trouvé dans mui-gzldy9 (non partant): {raw_state}")
-                        except:
-                            raw_state = "Inconnu"
-                            print("Aucun état trouvé dans les conteneurs connus")
+                    except:
+                        print("Aucun état trouvé dans les conteneurs connus")
 
                 print(f"État brut trouvé: {raw_state}")
-
-                # Conversion de l'état en tenant compte de la casse
                 normalized_state = raw_state.upper()
+
+                # Traitement des non partants
                 if "NON PARTANT" in normalized_state:
-                    # Pour un non partant, on retourne directement les données minimales
                     runner_data = {
                         'infos': {
                             'bib_number': bib_number,
-                            'race_name': self.get_race_from_url(driver),
+                            'race_name': race_name,
                             'name': name,
                             'category': category,
                             'state': "Non partant",
@@ -386,18 +369,16 @@ class RaceDataScraper:
                     self.save_data()
                     return runner_data
 
-                elif "ABANDON" in normalized_state:
+                # Détermination de l'état et du temps pour les autres cas
+                if "ABANDON" in normalized_state:
                     state = "Abandon"
-                    try:
-                        time_element = state_container.find_element(By.CLASS_NAME, "mui-1vazesu")
-                        finish_time = time_element.text.strip()
-                        if ':' in finish_time:
-                            hours, minutes, _ = finish_time.split(':')
-                            finish_time = f"{hours}h{minutes}"
-                    except:
-                        finish_time = "-"
                 elif "FINISHER" in normalized_state:
                     state = "Finisher"
+                else:
+                    state = "En course"
+
+                # Récupération du temps si disponible
+                if state in ["Abandon", "Finisher"]:
                     try:
                         time_element = state_container.find_element(By.CLASS_NAME, "mui-1vazesu")
                         finish_time = time_element.text.strip()
@@ -407,131 +388,109 @@ class RaceDataScraper:
                     except:
                         finish_time = "-"
                 else:
-                    state = "En course"
                     finish_time = "En course"
 
                 print(f"État normalisé: {state}")
 
-
-
-            except Exception as e:
-
-                print(f"Erreur lors de la récupération de l'état: {str(e)}")
-
-                state = "Inconnu"
-
-                finish_time = "-"
-
-                print("État inconnu assigné suite à une erreur")
-
-            # Ne continuer la récupération des données que si le coureur n'est pas non partant
-
-            if state != "Non partant":
-
-                # Récupérer les classements
-
-                print("\nDébut récupération des classements")
-
-                rankings = {"Général": "", "Sexe": "", "Catégorie": ""}
-
+                # Récupération de la vitesse moyenne si le coureur n'est pas non partant
                 try:
+                    print("\nDébut extraction vitesse moyenne...")
+                    main_container = driver.find_element(By.CLASS_NAME, "mui-14iziq5")
+                    print("Conteneur principal trouvé")
 
+                    info_sections = main_container.find_elements(By.CLASS_NAME, "mui-157h3i3")
+                    print(f"Nombre de sections info trouvées: {len(info_sections)}")
+
+                    if len(info_sections) >= 2:
+                        info_section = info_sections[1]
+                        print("Section info de vitesse trouvée, recherche des éléments...")
+
+                        for element in info_section.find_elements(By.CLASS_NAME, "mui-8v90jo"):
+                            try:
+                                label_container = element.find_element(By.CLASS_NAME, "mui-ct9q29")
+                                label = label_container.find_element(By.CLASS_NAME, "mui-wenrje").text.strip()
+                                print(f"Label trouvé: '{label}'")
+
+                                if "VIT. MOY." in label.upper():
+                                    print("Label de vitesse moyenne trouvé!")
+                                    speed_value = element.find_elements(By.TAG_NAME, "p")[-1].text.strip()
+                                    print(f"Valeur de vitesse trouvée: '{speed_value}'")
+                                    avg_speed = speed_value
+                                    break
+                            except Exception as e:
+                                print(f"Erreur lors de l'analyse d'un élément: {str(e)}")
+                                continue
+                except Exception as e:
+                    print(f"Erreur lors de la récupération de la vitesse moyenne: {str(e)}")
+                    avg_speed = "N/A"
+
+                # Récupération des classements
+                print("\nDébut récupération des classements")
+                try:
                     print("Recherche des containers de classement...")
-
                     ranking_section = driver.find_element(By.CLASS_NAME, "mui-157h3i3")
-
                     rank_elements = ranking_section.find_elements(By.CLASS_NAME, "mui-4ae55t")
-
                     print(f"Nombre d'éléments de classement trouvés: {len(rank_elements)}")
 
                     for element in rank_elements:
-
                         try:
-
                             type_text = element.find_element(By.CLASS_NAME, "mui-280lq").text.strip().upper()
-
                             value_text = element.find_element(By.CLASS_NAME, "mui-17rj2i9").text.strip()
-
                             print(f"Trouvé: {type_text} = {value_text}")
 
                             if "GÉNÉRAL" in type_text or "GENERAL" in type_text:
-
                                 rankings["Général"] = value_text
-
                             elif "SEXE" in type_text:
-
                                 rankings["Sexe"] = value_text
-
                             elif "CATÉGORIE" in type_text or "CATEGORIE" in type_text:
-
                                 rankings["Catégorie"] = value_text
-
-
                         except Exception as e:
-
                             print(f"Erreur lors de l'extraction d'un élément de classement: {str(e)}")
 
                     print("État final des classements:", rankings)
-
-
                 except Exception as e:
-
                     print(f"Erreur lors de la récupération des classements: {str(e)}")
 
-                    print("Détail de l'erreur:", traceback.format_exc())
+                # Récupération des points de passage
+                checkpoints = self.get_checkpoint_data(driver)
 
-
-
-                # Récupérer les données des points de passage
-                checkpoints = self.get_checkpoint_data(driver)  # Passer le driver existant
-                # Déterminer le dernier point
+                # Détermination du dernier point
                 last_checkpoint = ""
                 if checkpoints:
                     last_cp = checkpoints[-1]
                     last_checkpoint = last_cp['point']
 
-            else:
-                # Pour un non partant, mettre des valeurs par défaut
-                rankings = {
-                    "Général": "-",
-                    "Sexe": "-",
-                    "Catégorie": "-"
+                # Construction des données du coureur
+                runner_data = {
+                    'infos': {
+                        'bib_number': bib_number,
+                        'race_name': race_name,
+                        'name': name,
+                        'category': category,
+                        'state': state,
+                        'finish_time': finish_time,
+                        'overall_rank': rankings['Général'],
+                        'gender_rank': rankings['Sexe'],
+                        'category_rank': rankings['Catégorie'],
+                        'average_speed': avg_speed,
+                        'last_checkpoint': last_checkpoint,
+                        'total_elevation_gain': sum(cp['elevation_gain'] for cp in checkpoints) if checkpoints else 0,
+                        'total_elevation_loss': sum(cp['elevation_loss'] for cp in checkpoints) if checkpoints else 0
+                    },
+                    'checkpoints': checkpoints
                 }
 
-                avg_speed = "-"
-                last_checkpoint = "-"
-                checkpoints = []
+                # Sauvegarde des données
+                self.all_data[bib_str] = runner_data
+                self.save_data()
+                return runner_data
 
-            # Construire les données du coureur (commun aux deux cas)
-
-            runner_data = {
-                'infos': {
-                    'bib_number': bib_number,
-                    'race_name': race_name,
-                    'name': name,
-                    'category': category,
-                    'state': state,
-                    'finish_time': finish_time,
-                    'overall_rank': rankings['Général'],
-                    'gender_rank': rankings['Sexe'],
-                    'category_rank': rankings['Catégorie'],
-                    'average_speed': avg_speed,
-                    'last_checkpoint': last_checkpoint,
-                    'total_elevation_gain': sum(cp['elevation_gain'] for cp in checkpoints) if checkpoints else 0,
-                    'total_elevation_loss': sum(cp['elevation_loss'] for cp in checkpoints) if checkpoints else 0
-                },
-
-                'checkpoints': checkpoints
-
-            }
-
-            # Stocker les données dans le dictionnaire global
-
-            self.all_data[bib_str] = runner_data
-
-            self.save_data()
-
-            return runner_data
+            except Exception as e:
+                print(f"Erreur lors de la récupération de l'état: {str(e)}")
+                state = "Inconnu"
+                finish_time = "-"
+                print("État inconnu assigné suite à une erreur")
+                return None
 
         except Exception as e:
             print(f"Erreur générale pour le dossard {bib_number}: {str(e)}")
