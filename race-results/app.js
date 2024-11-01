@@ -1,31 +1,14 @@
-// Utilisation de HashRouter pour GitHub Pages
-const { HashRouter, Routes, Route, Link } = ReactRouterDOM;
+import { HashRouter, Routes, Route, Link } from 'react-router-dom';
+import RaceDashboard from './components/RaceDashboard';
+import TopAnalysis from './components/TopAnalysis';
+import RunnerDetails from './components/RunnerDetails';
 
 function App() {
     return (
         <HashRouter>
             <div className="min-h-screen bg-gray-50">
                 <nav className="bg-white shadow-sm">
-                    <div className="max-w-7xl mx-auto px-4">
-                        <div className="flex justify-between h-16">
-                            <div className="flex">
-                                <div className="flex space-x-8">
-                                    <Link 
-                                        to="/" 
-                                        className="inline-flex items-center px-1 pt-1 text-gray-900"
-                                    >
-                                        Résultats
-                                    </Link>
-                                    <Link 
-                                        to="/analyses" 
-                                        className="inline-flex items-center px-1 pt-1 text-gray-900"
-                                    >
-                                        Analyses
-                                    </Link>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    {/* ... */}
                 </nav>
 
                 <main>
@@ -39,3 +22,5 @@ function App() {
         </HashRouter>
     );
 }
+
+export default App;
