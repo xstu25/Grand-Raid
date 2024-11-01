@@ -671,6 +671,12 @@ class RaceTrackerApp:
 
         self.scraper = RaceDataScraper()
         self.checkpoint_windows = {}
+        self.initial_data = []  # Pour stocker les données initiales
+        self.current_filters = {
+            'race': "Toutes les courses",
+            'state': "Tous les états",
+            'category': "Toutes les catégories"
+        }
         self.create_widgets()
         self.load_cached_data()
 
@@ -766,18 +772,38 @@ class RaceTrackerApp:
 
         ctk.CTkLabel(filter_frame, text="Filtres:").pack(side=tk.LEFT, padx=5)
 
-        self.race_filter = ctk.CTkComboBox(filter_frame, values=["Toutes les courses"])
+        # Créer les widgets de filtre avec les nouveaux callbacks
+        self.race_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["Toutes les courses"],
+            command=lambda x: self.on_filter_change('race', x)
+        )
         self.race_filter.pack(side=tk.LEFT, padx=5)
-        self.race_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        self.race_filter.set("Toutes les courses")
 
-        self.state_filter = ctk.CTkComboBox(filter_frame, values=["Tous les états"])
+        self.state_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["Tous les états"],
+            command=lambda x: self.on_filter_change('state', x)
+        )
         self.state_filter.pack(side=tk.LEFT, padx=5)
-        self.state_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        self.state_filter.set("Tous les états")
 
-        # Nouveau filtre pour les catégories
-        self.category_filter = ctk.CTkComboBox(filter_frame, values=["Toutes les catégories"])
+        self.category_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["Toutes les catégories"],
+            command=lambda x: self.on_filter_change('category', x)
+        )
         self.category_filter.pack(side=tk.LEFT, padx=5)
-        self.category_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        self.category_filter.set("Toutes les catégories")
+
+        # Ajouter un bouton de réinitialisation
+        self.reset_filters_button = ctk.CTkButton(
+            filter_frame,
+            text="Réinitialiser les filtres",
+            command=self.reset_filters
+        )
+        self.reset_filters_button.pack(side=tk.LEFT, padx=20)
 
         # Ajout du bouton TOP Analyses
         self.analysis_button = ctk.CTkButton(
@@ -786,6 +812,56 @@ class RaceTrackerApp:
             command=self.show_top_analysis
         )
         self.analysis_button.pack(side=tk.LEFT, padx=5)
+
+    def load_initial_data(self):
+        """Charger et stocker les données initiales"""
+        self.initial_data.clear()
+        for item in self.tree.get_children():
+            self.initial_data.append(self.tree.item(item))
+
+    def on_filter_change(self, filter_type, value):
+        """Gestion du changement de filtre avec type de filtre"""
+        print(f"Changement du filtre {filter_type}: {value}")
+        self.current_filters[filter_type] = value
+        self.apply_filters()
+
+    def reset_filters(self):
+        """Réinitialiser tous les filtres et restaurer les données initiales"""
+        # Réinitialiser les valeurs des filtres
+        self.race_filter.set("Toutes les courses")
+        self.state_filter.set("Tous les états")
+        self.category_filter.set("Toutes les catégories")
+
+        self.current_filters = {
+            'race': "Toutes les courses",
+            'state': "Tous les états",
+            'category': "Toutes les catégories"
+        }
+
+        # Effacer le tableau actuel
+        self.tree.delete(*self.tree.get_children())
+
+        # Restaurer les données initiales
+        for item_data in self.initial_data:
+            self.tree.insert('', 'end', values=item_data['values'], tags=item_data.get('tags', ()))
+
+        print("Filtres réinitialisés - Données restaurées à l'état initial")
+        print(f"Nombre total de coureurs: {len(self.initial_data)}")
+
+    def load_cached_data(self):
+        """Charger les données en cache et initialiser les données de référence"""
+        if self.scraper.all_data:
+            cached_bibs = list(self.scraper.all_data.keys())
+            print(f"Chargement automatique de {len(cached_bibs)} dossards")
+            for bib in cached_bibs:
+                data = self.scraper.all_data[bib]
+                self.add_runner_to_tree(data)
+
+            # Stocker les données initiales après le chargement
+            self.load_initial_data()
+
+            self.update_filters()
+            self.progress_label.configure(text=f"{len(cached_bibs)} dossards chargés depuis le cache")
 
     def show_top_analysis(self):
         # Récupérer tous les dossards actuellement affichés dans le tableau
@@ -850,52 +926,55 @@ class RaceTrackerApp:
             )
 
     def treeview_sort_column(self, col, reverse):
-        """Trie le tableau selon une colonne avec gestion spéciale des classements"""
+        """Trie le tableau selon une colonne avec gestion correcte des nombres"""
         try:
-            # Récupérer toutes les données du tableau
             data = [(self.tree.set(item, col), item) for item in self.tree.get_children('')]
 
-            # Fonction pour extraire la valeur numérique d'une chaîne
-            def extract_number(text):
+            def convert_to_number(value):
+                """Convertit une valeur en nombre en gérant les cas spéciaux"""
+                if not value or value.strip() == '-':
+                    return float('inf')  # Mettre les valeurs vides à la fin
                 try:
-                    # Si c'est un classement (colonnes spécifiques)
-                    if col in ["overall_rank", "gender_rank", "category_rank"]:
-                        # Extraire uniquement les chiffres, ignorer les autres caractères
-                        return int(''.join(filter(str.isdigit, text))) if text.strip() else float('inf')
-
-                    # Pour les autres colonnes numériques
-                    if any(c.isdigit() for c in text):
-                        # Enlever les unités (m, km/h, etc.) et convertir en nombre
-                        num = ''.join(c for c in text if c.isdigit() or c in '.-')
-                        return float(num) if num else float('inf')
-                    return text  # Retourner le texte tel quel si pas de nombre
+                    # Nettoyer la valeur et convertir en nombre
+                    clean_value = ''.join(c for c in value if c.isdigit() or c == '.')
+                    return float(clean_value) if '.' in clean_value else int(clean_value)
                 except:
-                    return text  # En cas d'erreur, retourner le texte original
+                    return value
 
-            # Trier les données
-            try:
-                # Essayer de trier numériquement
+            # Détermine si la colonne doit être triée numériquement
+            numeric_columns = {
+                "overall_rank", "gender_rank", "category_rank",  # Classements
+                "bib",  # Dossards
+                "total_elevation_gain", "total_elevation_loss"  # Dénivelés
+            }
+
+            # Tri avec gestion spéciale pour les colonnes numériques
+            if col in numeric_columns:
                 data.sort(
-                    key=lambda x: (
-                        float('inf') if extract_number(x[0]) == '' else extract_number(x[0])
-                        if isinstance(extract_number(x[0]), (int, float))
-                        else x[0].lower()
-                    ),
+                    key=lambda x: convert_to_number(x[0]),
                     reverse=reverse
                 )
-            except:
-                # Si échec, trier alphabétiquement
-                data.sort(reverse=reverse)
+            else:
+                # Tri normal pour les autres colonnes
+                data.sort(
+                    key=lambda x: x[0].lower() if isinstance(x[0], str) else x[0],
+                    reverse=reverse
+                )
 
-            # Réorganiser les items dans le tableau
+            # Réorganiser les items
             for idx, (val, item) in enumerate(data):
                 self.tree.move(item, '', idx)
 
-            # Inverser le sens de tri pour le prochain clic
-            self.tree.heading(col, command=lambda: self.treeview_sort_column(col, not reverse))
+            # Inverser le sens pour le prochain clic
+            self.tree.heading(
+                col,
+                text=self.tree.heading(col)['text'],
+                command=lambda: self.treeview_sort_column(col, not reverse)
+            )
 
         except Exception as e:
             print(f"Erreur lors du tri de la colonne {col}: {e}")
+            traceback.print_exc()
 
 
     def add_runner_to_tree(self, data):
@@ -919,10 +998,13 @@ class RaceTrackerApp:
             ))
 
     def update_filters(self):
-        """Mise à jour des listes de filtres incluant les catégories"""
+        """Mise à jour des listes de filtres en fonction des données actuelles"""
         categories = set()
         states = set()
         races = set()
+        races.add("Toutes les courses")
+        states.add("Tous les états")
+        categories.add("Toutes les catégories")
 
         for item in self.tree.get_children():
             values = self.tree.item(item)['values']
@@ -931,43 +1013,55 @@ class RaceTrackerApp:
                 categories.add(values[3])  # Catégorie (index 3)
                 states.add(values[8])  # État (index 8)
 
-        self.category_filter.configure(values=["Toutes les catégories"] + sorted(list(categories)))
-        self.state_filter.configure(values=["Tous les états"] + sorted(list(states)))
-        self.race_filter.configure(values=["Toutes les courses"] + sorted(list(races)))
+        # Mettre à jour les valeurs des ComboBox
+        self.race_filter.configure(values=sorted(list(races)))
+        self.state_filter.configure(values=sorted(list(states)))
+        self.category_filter.configure(values=sorted(list(categories)))
 
-    def apply_filters(self, event=None):
-        """Application des filtres incluant le filtre de catégorie"""
-        selected_category = self.category_filter.get()
-        selected_state = self.state_filter.get()
-        selected_race = self.race_filter.get()
 
+
+    def apply_filters(self):
+        """Application des filtres avec gestion améliorée"""
+        # Sauvegarder toutes les lignes originales
         all_items = [(self.tree.item(item), item) for item in self.tree.get_children()]
+
+        # Effacer l'affichage actuel
         self.tree.delete(*self.tree.get_children())
+
+        filtered_count = 0
 
         for item_data, item_id in all_items:
             values = item_data['values']
+            if not values:
+                continue
+
             show_item = True
 
-            if selected_category != "Toutes les catégories" and values[3] != selected_category:
+            # Vérifier chaque filtre
+            if self.current_filters['race'] != "Toutes les courses" and values[0] != self.current_filters['race']:
                 show_item = False
-            if selected_state != "Tous les états" and values[8] != selected_state:
+            if self.current_filters['category'] != "Toutes les catégories" and values[3] != self.current_filters[
+                'category']:
                 show_item = False
-            if selected_race != "Toutes les courses" and values[0] != selected_race:
+            if self.current_filters['state'] != "Tous les états" and values[8] != self.current_filters['state']:
                 show_item = False
 
             if show_item:
-                self.tree.insert('', 'end', values=values)
+                self.tree.insert('', 'end', values=values, tags=item_data.get('tags', ()))
+                filtered_count += 1
 
+        # Afficher un résumé des filtres appliqués
+        filter_summary = []
+        if self.current_filters['race'] != "Toutes les courses":
+            filter_summary.append(f"Course: {self.current_filters['race']}")
+        if self.current_filters['category'] != "Toutes les catégories":
+            filter_summary.append(f"Catégorie: {self.current_filters['category']}")
+        if self.current_filters['state'] != "Tous les états":
+            filter_summary.append(f"État: {self.current_filters['state']}")
 
-    def load_cached_data(self):
-        if self.scraper.all_data:
-            cached_bibs = list(self.scraper.all_data.keys())
-            print(f"Chargement automatique de {len(cached_bibs)} dossards")
-            for bib in cached_bibs:
-                data = self.scraper.all_data[bib]
-                self.add_runner_to_tree(data)
-            self.update_filters()
-            self.progress_label.configure(text=f"{len(cached_bibs)} dossards chargés depuis le cache")
+        print(f"Filtres actifs: {' | '.join(filter_summary) if filter_summary else 'Aucun'}")
+        print(f"Nombre de coureurs affichés: {filtered_count}")
+
 
     def scan_bibs(self, bib_numbers):
         total = len(bib_numbers)
@@ -1031,6 +1125,7 @@ class TopAnalysisWindow:
         self.window.geometry("1400x800")
         self.scraper = scraper
         self.bibs = bibs
+        self.sections_info = {}  # Initialisation de sections_info ici
 
         # Frame principal avec défilement
         self.main_frame = ctk.CTkFrame(self.window)
@@ -1156,8 +1251,8 @@ class TopAnalysisWindow:
         self.update_section_display()
 
     def update_section_selector(self, race):
-        """Mettre à jour la liste des sections avec les dénivelés corrects"""
-        sections = {}  # Utiliser un dictionnaire pour stocker les infos de section
+        """Mettre à jour la liste des sections avec les données associées"""
+        self.sections_info = {}  # Réinitialiser les infos de section
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
@@ -1165,20 +1260,19 @@ class TopAnalysisWindow:
                     checkpoints = data['checkpoints']
                     for i in range(len(checkpoints) - 1):
                         section_name = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
-                        sections[section_name] = {
-                            'distance': checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'],
-                            'elevation_gain': checkpoints[i + 1]['elevation_gain'],
-                            # Prendre le dénivelé du point d'arrivée
-                            'elevation_loss': checkpoints[i + 1]['elevation_loss']
-                            # Prendre le dénivelé du point d'arrivée
-                        }
+                        if section_name not in self.sections_info:
+                            self.sections_info[section_name] = {
+                                'name': section_name,
+                                'distance': checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'],
+                                'elevation_gain': checkpoints[i + 1]['elevation_gain'],
+                                'elevation_loss': checkpoints[i + 1]['elevation_loss']
+                            }
 
-        self.section_selector.configure(values=sorted(list(sections.keys())))
-        if sections:
-            self.section_selector.set(sorted(list(sections.keys()))[0])
-
-        # Stocker les informations des sections pour les utiliser plus tard
-        self.sections_info = sections
+        # Mettre à jour le ComboBox avec les noms des sections
+        section_names = sorted(list(self.sections_info.keys()))
+        self.section_selector.configure(values=section_names)
+        if section_names:
+            self.section_selector.set(section_names[0])
 
     def update_displays(self):
         """Mettre à jour tous les affichages en fonction de la course sélectionnée"""
@@ -1896,17 +1990,10 @@ class TopAnalysisWindow:
         tree.pack(fill=tk.X, padx=5, pady=5)
 
     def convert_time_to_seconds(self, time_str):
-        """
-        Convertit un temps au format HH:MM:SS en secondes,
-        en gérant les temps supérieurs à 24h
-        """
+        """Convertit un temps au format HH:MM:SS en secondes"""
         try:
-            # Diviser le temps en heures, minutes, secondes
             hours, minutes, seconds = map(int, time_str.split(':'))
-
-            # Calculer le total en secondes
-            total_seconds = hours * 3600 + minutes * 60 + seconds
-            return total_seconds
+            return hours * 3600 + minutes * 60 + seconds
         except Exception as e:
             print(f"Erreur lors de la conversion du temps {time_str}: {e}")
             return None
@@ -1919,11 +2006,15 @@ class TopAnalysisWindow:
 
         selected_race = self.race_selector.get()
         selected_section = self.section_selector.get()
+
         if not selected_section or selected_section not in self.sections_info:
             return
 
-        # Utiliser les informations correctes de la section
+        # Utiliser les informations de section stockées
         section_info = self.sections_info[selected_section]
+
+        # Collecter les performances pour la section sélectionnée
+        section_performances = []
 
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
@@ -1935,112 +2026,121 @@ class TopAnalysisWindow:
                         section = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
                         if section == selected_section:
                             try:
-                                # Utiliser les dénivelés corrects stockés
-                                if section_info is None:
-                                    section_info = {
-                                        'name': section,
-                                        'distance': checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'],
-                                        'elevation_gain': checkpoints[i + 1]['elevation_gain'],
-                                        'elevation_loss': checkpoints[i + 1]['elevation_loss']
-                                    }
-
-                                # Le reste du code pour le calcul des temps et vitesses
-                                time1_seconds = self.convert_time_to_seconds(checkpoints[i]['race_time'])
-                                time2_seconds = self.convert_time_to_seconds(checkpoints[i + 1]['race_time'])
-
-                                if time1_seconds is None or time2_seconds is None:
-                                    continue
-
-                                section_time = time2_seconds - time1_seconds
-                                if section_time <= 0:  # Ignorer les sections avec temps négatif ou nul
-                                    continue
-
-                                # Calculer la vitesse classique
-                                hours = section_time / 3600
-                                speed = section_info['distance'] / hours if hours > 0 else 0
-
-                                # Calculer la vitesse effort avec la nouvelle formule
-                                effort_speed = self.calculate_effort_speed(
-                                    distance=section_info['distance'],
-                                    time_seconds=section_time,
-                                    elevation_gain=section_info['elevation_gain'],
-                                    elevation_loss=section_info['elevation_loss']
+                                # Calculer le temps de la section en gardant le format HH:MM:SS
+                                section_time = self.time_diff(
+                                    checkpoints[i + 1]['race_time'],
+                                    checkpoints[i]['race_time']
                                 )
 
-                                # Déterminer la tendance de la section
-                                total_distance_m = section_info['distance'] * 1000
-                                if total_distance_m > 0:
-                                    elevation_ratio = (section_info['elevation_gain'] - section_info[
-                                        'elevation_loss']) / total_distance_m
-                                    if elevation_ratio > 0.05:  # >5% montée
-                                        tendency = "↗️"
-                                    elif elevation_ratio < -0.05:  # >5% descente
-                                        tendency = "↘️"
+                                if not section_time:
+                                    continue
+
+                                # Pour le calcul des vitesses, on a besoin du temps en heures
+                                h, m, s = map(int, section_time.split(':'))
+                                hours = h + m / 60 + s / 3600
+
+                                # Calculer la vitesse si le temps est valide
+                                if hours > 0:
+                                    speed = section_info['distance'] / hours
+
+                                    # Calculer la vitesse effort
+                                    effort_speed = (
+                                                           section_info['distance'] +
+                                                           (section_info['elevation_gain'] / 1000 * 10) +
+                                                           (section_info['elevation_loss'] / 1000 * 2)
+                                                   ) / hours
+
+                                    # Calculer la progression de classement
+                                    rank1 = int(checkpoints[i]['rank']) if checkpoints[i]['rank'] else 0
+                                    rank2 = int(checkpoints[i + 1]['rank']) if checkpoints[i + 1]['rank'] else 0
+                                    progression = rank1 - rank2 if rank1 and rank2 else 0
+
+                                    # Calculer la tendance (montée/descente/plat)
+                                    total_distance_m = section_info['distance'] * 1000
+                                    if total_distance_m > 0:
+                                        elevation_ratio = (
+                                                (section_info['elevation_gain'] - section_info['elevation_loss'])
+                                                / total_distance_m
+                                        )
+                                        if elevation_ratio > 0.05:
+                                            tendency = "↗️"
+                                        elif elevation_ratio < -0.05:
+                                            tendency = "↘️"
+                                        else:
+                                            tendency = "➡️"
                                     else:
                                         tendency = "➡️"
-                                else:
-                                    tendency = "➡️"
 
-                                # Progression sur la section
-                                rank1 = int(checkpoints[i]['rank']) if checkpoints[i]['rank'] else 0
-                                rank2 = int(checkpoints[i + 1]['rank']) if checkpoints[i + 1]['rank'] else 0
-                                progression = rank1 - rank2 if rank1 and rank2 else 0
+                                    # Ajouter les performances calculées
+                                    section_performances.append({
+                                        'bib': bib,
+                                        'name': data['infos']['name'],
+                                        'race': data['infos']['race_name'],
+                                        'time': section_time,  # Format HH:MM:SS
+                                        'speed': speed,
+                                        'effort_speed': effort_speed,
+                                        'progression': progression,
+                                        'start_rank': rank1,
+                                        'end_rank': rank2,
+                                        'tendency': tendency
+                                    })
 
-                                section_performances.append({
-                                    'bib': bib,
-                                    'name': data['infos']['name'],
-                                    'race': data['infos']['race_name'],
-                                    'time': section_time,
-                                    'speed': speed,
-                                    'effort_speed': effort_speed,
-                                    'progression': progression,
-                                    'start_rank': rank1,
-                                    'end_rank': rank2,
-                                    'tendency': tendency
-                                })
                             except Exception as e:
                                 print(f"Erreur lors du calcul des performances: {e}")
                                 continue
+
+            # Tri des performances
+
+        def time_to_seconds(time_str):
+            """Convertit HH:MM:SS en secondes pour le tri"""
+            h, m, s = map(int, time_str.split(':'))
+            return h * 3600 + m * 60 + s
+
+            # Pour le tri par temps
+
+        section_performances.sort(key=lambda x: time_to_seconds(x['time']))
 
         if section_info:
             # Créer la carte d'information de la section
             self.create_section_info_card(self.section_results_scroll, section_info)
 
-            # 1. Classement par temps
-            section_performances.sort(key=lambda x: x['time'])
-            self.create_section_performance_table(
-                self.section_results_scroll,
-                section_performances[:20],
-                "Top 20 temps sur la section",
-                'time'
-            )
+            # Créer les tableaux de performance si on a des données
+            if section_performances:
+                # 1. Classement par temps
+                section_performances.sort(key=lambda x: x['time'])
+                self.create_section_performance_table(
+                    self.section_results_scroll,
+                    section_performances[:20],
+                    "Top 20 temps sur la section",
+                    'time'
+                )
 
-            # 2. Classement par vitesse (avec tendance)
-            section_performances.sort(key=lambda x: x['speed'], reverse=True)
-            self.create_section_performance_table(
-                self.section_results_scroll,
-                section_performances[:20],
-                "Top 20 vitesses sur la section",
-                'speed'
-            )
+                # 2. Classement par vitesse
+                section_performances.sort(key=lambda x: x['speed'], reverse=True)
+                self.create_section_performance_table(
+                    self.section_results_scroll,
+                    section_performances[:20],
+                    "Top 20 vitesses sur la section",
+                    'speed'
+                )
 
-            # 3. Classement par vitesse effort (avec tendance)
-            section_performances.sort(key=lambda x: x['effort_speed'], reverse=True)
-            self.create_section_performance_table(
-                self.section_results_scroll,
-                section_performances[:20],
-                "Top 20 vitesses effort sur la section",
-                'effort'
-            )
+                # 3. Classement par vitesse effort
+                section_performances.sort(key=lambda x: x['effort_speed'], reverse=True)
+                self.create_section_performance_table(
+                    self.section_results_scroll,
+                    section_performances[:20],
+                    "Top 20 vitesses effort sur la section",
+                    'effort'
+                )
 
-            # 4. Classement par progression
-            section_performances.sort(key=lambda x: x['progression'], reverse=True)
-            self.create_section_performance_table(
-                self.section_results_scroll,
-                section_performances[:20],
-                "Top 20 progressions sur la section",
-                'progression'
-            )
+                # 4. Classement par progression
+                section_performances.sort(key=lambda x: x['progression'], reverse=True)
+                self.create_section_performance_table(
+                    self.section_results_scroll,
+                    section_performances[:20],
+                    "Top 20 progressions sur la section",
+                    'progression'
+                )
 
     def calculate_effort_speed(self, distance, time_seconds, elevation_gain, elevation_loss):
         """
@@ -2137,8 +2237,7 @@ class TopAnalysisWindow:
 
         def format_performance(item):
             if performance_type == 'time':
-                minutes = item['time'] / 60
-                return f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
+                return item['time']  # Déjà au format HH:MM:SS
             elif performance_type == 'speed':
                 return f"{item['speed']:.1f} km/h"
             elif performance_type == 'effort':
@@ -2160,6 +2259,29 @@ class TopAnalysisWindow:
 
         tree = self.create_table(frame, columns, headers, table_data, tooltips=tooltips)
         tree.pack(fill=tk.X, padx=5, pady=5)
+
+    def time_diff(self, time2, time1):
+        """
+        Calcule la différence entre deux temps au format HH:MM:SS
+        Retourne le résultat au format HH:MM:SS
+        """
+        try:
+            # Extraire les heures, minutes, secondes
+            h1, m1, s1 = map(int, time1.split(':'))
+            h2, m2, s2 = map(int, time2.split(':'))
+
+            # Convertir en secondes pour le calcul
+            total_seconds = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1)
+
+            # Reconvertir en HH:MM:SS
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        except Exception as e:
+            print(f"Erreur lors du calcul de différence de temps: {e}")
+            return None
 
 
 
