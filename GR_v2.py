@@ -766,6 +766,32 @@ class RaceTrackerApp:
         self.category_filter.pack(side=tk.LEFT, padx=5)
         self.category_filter.bind('<<ComboboxSelected>>', self.apply_filters)
 
+        # Ajout du bouton TOP Analyses
+        self.analysis_button = ctk.CTkButton(
+            input_frame,
+            text="TOP Analyses",
+            command=self.show_top_analysis
+        )
+        self.analysis_button.pack(side=tk.LEFT, padx=5)
+
+    def show_top_analysis(self):
+        # Récupérer tous les dossards actuellement affichés dans le tableau
+        bibs = []
+        for item in self.tree.get_children():
+            values = self.tree.item(item)['values']
+            if values:
+                bibs.append(values[1])  # L'index 1 correspond à la colonne du dossard
+
+        if not bibs:
+            messagebox.showwarning(
+                "Attention",
+                "Aucun coureur n'est actuellement affiché dans le tableau!"
+            )
+            return
+
+        # Créer la fenêtre d'analyse
+        TopAnalysisWindow(self.root, self.scraper, bibs)
+
     def scanning_complete(self, scanned, cached):
         """Finalise le processus de scan"""
         self.scan_button.configure(state="normal")
@@ -988,12 +1014,14 @@ class TopAnalysisWindow:
         # Ajouter les onglets
         self.tab_progress = self.tabview.add("Progression")
         self.tab_elevation = self.tabview.add("Dénivelés")
-        self.tab_speed = self.tabview.add("Vitesses")
+        self.tab_speed = self.tabview.add("Vitesses et Efforts")
+        self.tab_sections = self.tabview.add("Sections")
 
         # Remplir les onglets
         self.fill_progress_tab()
         self.fill_elevation_tab()
         self.fill_speed_tab()
+        self.fill_sections_tab()
 
     def create_table(self, parent, columns, headers, data, height=10):
         tree = ttk.Treeview(
@@ -1001,6 +1029,20 @@ class TopAnalysisWindow:
             columns=columns,
             show="headings",
             height=height
+        )
+
+        # Configuration du style
+        style = ttk.Style()
+        style.configure(
+            "Treeview",
+            background="#2b2b2b",
+            foreground="white",
+            fieldbackground="#2b2b2b"
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#2b2b2b",
+            foreground="white"
         )
 
         for col in columns:
@@ -1016,56 +1058,107 @@ class TopAnalysisWindow:
         frame = ctk.CTkFrame(self.tab_progress)
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Meilleurs progressions
-        progression_frame = ctk.CTkFrame(frame)
-        progression_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(progression_frame, text="Meilleures progressions", font=("Arial", 16, "bold")).pack(pady=5)
+        # Meilleurs progressions globales
+        global_progression_frame = ctk.CTkFrame(frame)
+        global_progression_frame.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(global_progression_frame, text="Meilleures progressions globales",
+                     font=("Arial", 16, "bold")).pack(pady=5)
 
-        # Calculer les progressions
-        progressions = []
+        # Calculer les progressions globales
+        global_progressions = []
         for bib in self.bibs:
-            if bib in self.scraper.all_data:
-                data = self.scraper.all_data[bib]
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
                 checkpoints = data['checkpoints']
 
-                # Chercher la plus grande progression entre deux points
-                max_progression = 0
-                progression_points = ("", "")
-                previous_rank = None
+                if len(checkpoints) >= 2:
+                    first_rank = None
+                    last_rank = None
 
-                for cp in checkpoints:
-                    if cp['rank'] is not None:
-                        if previous_rank is not None:
-                            progression = previous_rank - cp['rank']
-                            if progression > max_progression:
-                                max_progression = progression
-                                progression_points = (previous_point, cp['point'])
-                        previous_rank = cp['rank']
-                        previous_point = cp['point']
+                    for cp in checkpoints:
+                        if cp['rank'] is not None:
+                            try:
+                                rank = int(cp['rank'])
+                                if first_rank is None:
+                                    first_rank = rank
+                                last_rank = rank
+                            except ValueError:
+                                continue
 
-                if max_progression > 0:
-                    progressions.append((
-                        max_progression,
-                        bib,
-                        data['infos']['name'],
-                        progression_points[0],
-                        progression_points[1]
-                    ))
+                    if first_rank is not None and last_rank is not None:
+                        progression = first_rank - last_rank
+                        if progression != 0:
+                            global_progressions.append((
+                                progression,
+                                bib,
+                                data['infos']['name'],
+                                first_rank,
+                                last_rank
+                            ))
 
-        # Trier et afficher les meilleures progressions
-        progressions.sort(reverse=True)
-        columns = ["rank", "bib", "name", "from_point", "to_point", "places"]
+        # Trier et afficher les meilleures progressions globales
+        global_progressions.sort(reverse=True)
+        columns = ["rank", "bib", "name", "start_pos", "end_pos", "progression"]
+        headers = {
+            "rank": "Pos",
+            "bib": "Dossard",
+            "name": "Nom",
+            "start_pos": "Position départ",
+            "end_pos": "Position finale",
+            "progression": "Progression"
+        }
+
+        data = [(i + 1, *prog[1:], f"{'+' if prog[0] > 0 else ''}{prog[0]}")
+                for i, prog in enumerate(global_progressions[:10])]
+        tree = self.create_table(global_progression_frame, columns, headers, data)
+        tree.pack(fill=tk.X, padx=5, pady=5)
+
+        # Meilleures progressions entre points
+        point_progression_frame = ctk.CTkFrame(frame)
+        point_progression_frame.pack(fill=tk.X, padx=5, pady=15)
+        ctk.CTkLabel(point_progression_frame, text="Meilleures progressions entre points",
+                     font=("Arial", 16, "bold")).pack(pady=5)
+
+        point_progressions = []
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                checkpoints = data['checkpoints']
+
+                for i in range(len(checkpoints) - 1):
+                    if (checkpoints[i]['rank'] is not None and
+                            checkpoints[i + 1]['rank'] is not None):
+                        try:
+                            rank1 = int(checkpoints[i]['rank'])
+                            rank2 = int(checkpoints[i + 1]['rank'])
+                            progression = rank1 - rank2
+                            if progression > 0:
+                                point_progressions.append((
+                                    progression,
+                                    bib,
+                                    data['infos']['name'],
+                                    checkpoints[i]['point'],
+                                    checkpoints[i + 1]['point'],
+                                    rank1,
+                                    rank2
+                                ))
+                        except ValueError:
+                            continue
+
+        point_progressions.sort(reverse=True)
+        columns = ["rank", "bib", "name", "from_point", "to_point", "positions"]
         headers = {
             "rank": "Pos",
             "bib": "Dossard",
             "name": "Nom",
             "from_point": "De",
             "to_point": "À",
-            "places": "Places gagnées"
+            "positions": "Places gagnées"
         }
 
-        data = [(i + 1, *prog[1:], f"+{prog[0]}") for i, prog in enumerate(progressions[:10])]
-        tree = self.create_table(progression_frame, columns, headers, data)
+        data = [(i + 1, *prog[1:4], prog[4], f"+{prog[0]}")
+                for i, prog in enumerate(point_progressions[:10])]
+        tree = self.create_table(point_progression_frame, columns, headers, data)
         tree.pack(fill=tk.X, padx=5, pady=5)
 
     def fill_elevation_tab(self):
@@ -1075,48 +1168,51 @@ class TopAnalysisWindow:
         # Meilleurs grimpeurs (vitesse ascensionnelle)
         climbing_frame = ctk.CTkFrame(frame)
         climbing_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(climbing_frame, text="Meilleurs grimpeurs", font=("Arial", 16, "bold")).pack(pady=5)
+        ctk.CTkLabel(climbing_frame, text="Meilleurs grimpeurs",
+                     font=("Arial", 16, "bold")).pack(pady=5)
 
         climbers = []
         for bib in self.bibs:
-            if bib in self.scraper.all_data:
-                data = self.scraper.all_data[bib]
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
                 checkpoints = data['checkpoints']
 
-                # Calculer la vitesse ascensionnelle moyenne
-                total_elevation = 0
-                total_time = 0
+                # Calculer la vitesse ascensionnelle moyenne sur les sections positives
+                total_elevation_time = 0
+                total_elevation_gain = 0
 
                 for i in range(len(checkpoints) - 1):
-                    if checkpoints[i]['elevation_gain'] > 0:
+                    if checkpoints[i]['elevation_gain'] > 100:  # Sections significatives
                         try:
                             time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
                             time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
                             segment_time = (time2 - time1).total_seconds() / 3600  # en heures
+
                             if segment_time > 0:
-                                total_elevation += checkpoints[i]['elevation_gain']
-                                total_time += segment_time
+                                total_elevation_time += segment_time
+                                total_elevation_gain += checkpoints[i]['elevation_gain']
                         except:
                             continue
 
-                if total_time > 0:
-                    climbing_speed = total_elevation / total_time
+                if total_elevation_time > 0:
+                    climbing_speed = total_elevation_gain / total_elevation_time
                     climbers.append((
                         climbing_speed,
                         bib,
                         data['infos']['name'],
-                        total_elevation,
+                        total_elevation_gain,
+                        total_elevation_time,
                         f"{climbing_speed:.1f}"
                     ))
 
-        # Trier et afficher les meilleurs grimpeurs
         climbers.sort(reverse=True)
-        columns = ["rank", "bib", "name", "elevation", "speed"]
+        columns = ["rank", "bib", "name", "d_plus", "time", "speed"]
         headers = {
             "rank": "Pos",
             "bib": "Dossard",
             "name": "Nom",
-            "elevation": "D+ Total",
+            "d_plus": "D+ Total (m)",
+            "time": "Temps (h)",
             "speed": "Vitesse (m/h)"
         }
 
@@ -1124,108 +1220,324 @@ class TopAnalysisWindow:
         tree = self.create_table(climbing_frame, columns, headers, data)
         tree.pack(fill=tk.X, padx=5, pady=5)
 
-    def fill_speed_tab(self):
-        frame = ctk.CTkFrame(self.tab_speed)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Meilleurs descendeurs
+        descending_frame = ctk.CTkFrame(frame)
+        descending_frame.pack(fill=tk.X, padx=5, pady=15)
+        ctk.CTkLabel(descending_frame, text="Meilleurs descendeurs",
+                     font=("Arial", 16, "bold")).pack(pady=5)
 
-        # Plus grandes variations de vitesse
-        speed_frame = ctk.CTkFrame(frame)
-        speed_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(speed_frame, text="Plus grandes variations de vitesse", font=("Arial", 16, "bold")).pack(pady=5)
-
-        speed_variations = []
+        descenders = []
         for bib in self.bibs:
-            if bib in self.scraper.all_data:
-                data = self.scraper.all_data[bib]
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
                 checkpoints = data['checkpoints']
 
-                speeds = []
-                for cp in checkpoints:
-                    try:
-                        speed = float(cp['speed'].replace('km/h', '').strip())
-                        speeds.append(speed)
-                    except:
-                        continue
+                total_descent_time = 0
+                total_elevation_loss = 0
 
-                if speeds:
-                    min_speed = min(speeds)
-                    max_speed = max(speeds)
-                    variation = max_speed - min_speed
-                    avg_speed = sum(speeds) / len(speeds)
+                for i in range(len(checkpoints) - 1):
+                    if checkpoints[i]['elevation_loss'] > 100:  # Sections significatives
+                        try:
+                            time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
+                            time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
+                            segment_time = (time2 - time1).total_seconds() / 3600
 
-                    speed_variations.append((
-                        variation,
+                            if segment_time > 0:
+                                total_descent_time += segment_time
+                                total_elevation_loss += abs(checkpoints[i]['elevation_loss'])
+                        except:
+                            continue
+
+                if total_descent_time > 0:
+                    descending_speed = total_elevation_loss / total_descent_time
+                    descenders.append((
+                        descending_speed,
                         bib,
                         data['infos']['name'],
-                        f"{min_speed:.1f}",
-                        f"{max_speed:.1f}",
-                        f"{avg_speed:.1f}"
+                        total_elevation_loss,
+                        total_descent_time,
+                        f"{descending_speed:.1f}"
                     ))
 
-        # Trier et afficher les variations de vitesse
-        speed_variations.sort(reverse=True)
-        columns = ["rank", "bib", "name", "min_speed", "max_speed", "avg_speed", "variation"]
+        descenders.sort(reverse=True)
+        columns = ["rank", "bib", "name", "d_minus", "time", "speed"]
         headers = {
             "rank": "Pos",
             "bib": "Dossard",
             "name": "Nom",
-            "min_speed": "Min (km/h)",
-            "max_speed": "Max (km/h)",
-            "avg_speed": "Moy (km/h)",
-            "variation": "Variation (km/h)"
+            "d_minus": "D- Total (m)",
+            "time": "Temps (h)",
+            "speed": "Vitesse (m/h)"
         }
 
-        data = [(i + 1, *var[1:], f"{var[0]:.1f}") for i, var in enumerate(speed_variations[:10])]
-        tree = self.create_table(speed_frame, columns, headers, data)
+        data = [(i + 1, *desc[1:]) for i, desc in enumerate(descenders[:10])]
+        tree = self.create_table(descending_frame, columns, headers, data)
         tree.pack(fill=tk.X, padx=5, pady=5)
 
-        # Meilleure régularité
-        regularity_frame = ctk.CTkFrame(frame)
-        regularity_frame.pack(fill=tk.X, padx=5, pady=15)
-        ctk.CTkLabel(regularity_frame, text="Coureurs les plus réguliers", font=("Arial", 16, "bold")).pack(pady=5)
+    def fill_speed_tab(self):
+        frame = ctk.CTkFrame(self.tab_speed)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        regularities = []
+        # Vitesses moyennes les plus élevées
+        speed_frame = ctk.CTkFrame(frame)
+        speed_frame.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(speed_frame, text="Meilleures vitesses moyennes",
+                     font=("Arial", 16, "bold")).pack(pady=5)
+
+        speeds = []
         for bib in self.bibs:
-            if bib in self.scraper.all_data:
-                data = self.scraper.all_data[bib]
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
                 checkpoints = data['checkpoints']
 
-                speeds = []
+                total_speed = 0
+                count = 0
+                max_speed = 0
+
                 for cp in checkpoints:
                     try:
                         speed = float(cp['speed'].replace('km/h', '').strip())
+                        total_speed += speed
+                        count += 1
+                        max_speed = max(max_speed, speed)
+                    except:
+                        continue
+
+                if count > 0:
+                    avg_speed = total_speed / count
+                    speeds.append((
+                        avg_speed,
+                        bib,
+                        data['infos']['name'],
+                        max_speed,
+                        f"{avg_speed:.1f}"
+                    ))
+
+        speeds.sort(reverse=True)
+        columns = ["rank", "bib", "name", "max_speed", "avg_speed"]
+        headers = {
+            "rank": "Pos",
+            "bib": "Dossard",
+            "name": "Nom",
+            "max_speed": "Vitesse max (km/h)",
+            "avg_speed": "Vitesse moy (km/h)"
+        }
+
+        data = [(i + 1, *spd[1:]) for i, spd in enumerate(speeds[:10])]
+        tree = self.create_table(speed_frame, columns, headers, data)
+        tree.pack(fill=tk.X, padx=5, pady=5)
+
+        # Meilleures vitesses effort
+        effort_frame = ctk.CTkFrame(frame)
+        effort_frame.pack(fill=tk.X, padx=5, pady=15)
+        ctk.CTkLabel(effort_frame, text="Meilleures vitesses effort",
+                     font=("Arial", 16, "bold")).pack(pady=5)
+
+        efforts = []
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                checkpoints = data['checkpoints']
+
+                total_effort = 0
+                count = 0
+                max_effort = 0
+
+                for cp in checkpoints:
+                    try:
+                        effort_speed = float(cp['effort_speed'].replace('km/h', '').strip())
+                        total_effort += effort_speed
+                        count += 1
+                        max_effort = max(max_effort, effort_speed)
+                    except:
+                        continue
+
+                if count > 0:
+                    avg_effort = total_effort / count
+                    efforts.append((
+                        avg_effort,
+                        bib,
+                        data['infos']['name'],
+                        max_effort,
+                        f"{avg_effort:.1f}"
+                    ))
+
+        efforts.sort(reverse=True)
+        columns = ["rank", "bib", "name", "max_effort", "avg_effort"]
+        headers = {
+            "rank": "Pos",
+            "bib": "Dossard",
+            "name": "Nom",
+            "max_effort": "Vitesse effort max (km/h)",
+            "avg_effort": "Vitesse effort moy (km/h)"
+        }
+
+        data = [(i + 1, *eff[1:]) for i, eff in enumerate(efforts[:10])]
+        tree = self.create_table(effort_frame, columns, headers, data)
+        tree.pack(fill=tk.X, padx=5, pady=5)
+
+        # Coureurs les plus réguliers
+        regularity_frame = ctk.CTkFrame(frame)
+        regularity_frame.pack(fill=tk.X, padx=5, pady=15)
+        ctk.CTkLabel(regularity_frame, text="Coureurs les plus réguliers",
+                     font=("Arial", 16, "bold")).pack(pady=5)
+
+        regularities = []
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                checkpoints = data['checkpoints']
+
+                speeds = []
+                effort_speeds = []
+
+                for cp in checkpoints:
+                    try:
+                        speed = float(cp['speed'].replace('km/h', '').strip())
+                        effort_speed = float(cp['effort_speed'].replace('km/h', '').strip())
                         speeds.append(speed)
+                        effort_speeds.append(effort_speed)
                     except:
                         continue
 
                 if len(speeds) > 2:
                     avg_speed = sum(speeds) / len(speeds)
-                    variations = [abs(s - avg_speed) for s in speeds]
-                    avg_variation = sum(variations) / len(variations)
-                    variation_percentage = (avg_variation / avg_speed) * 100
+                    speed_variations = [abs(s - avg_speed) for s in speeds]
+                    avg_speed_variation = sum(speed_variations) / len(speed_variations)
+
+                    avg_effort = sum(effort_speeds) / len(effort_speeds)
+                    effort_variations = [abs(e - avg_effort) for e in effort_speeds]
+                    avg_effort_variation = sum(effort_variations) / len(effort_variations)
+
+                    # Coefficient de régularité combiné
+                    regularity_score = (avg_speed_variation / avg_speed +
+                                        avg_effort_variation / avg_effort) / 2
 
                     regularities.append((
-                        variation_percentage,
+                        regularity_score,
                         bib,
                         data['infos']['name'],
                         f"{avg_speed:.1f}",
-                        f"{variation_percentage:.1f}"
+                        f"{avg_effort:.1f}",
+                        f"{regularity_score:.2f}"
                     ))
 
-        # Trier et afficher les coureurs les plus réguliers
         regularities.sort()  # Plus petite variation en premier
-        columns = ["rank", "bib", "name", "avg_speed", "variation"]
+        columns = ["rank", "bib", "name", "avg_speed", "avg_effort", "regularity"]
         headers = {
             "rank": "Pos",
             "bib": "Dossard",
             "name": "Nom",
             "avg_speed": "Vitesse moy (km/h)",
-            "variation": "Variation (%)"
+            "avg_effort": "Effort moy (km/h)",
+            "regularity": "Score régularité"
         }
 
         data = [(i + 1, *reg[1:]) for i, reg in enumerate(regularities[:10])]
         tree = self.create_table(regularity_frame, columns, headers, data)
         tree.pack(fill=tk.X, padx=5, pady=5)
+
+
+    def fill_sections_tab(self):
+        frame = ctk.CTkFrame(self.tab_sections)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Meilleures performances par section
+        sections_frame = ctk.CTkFrame(frame)
+        sections_frame.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(sections_frame, text="Meilleures performances par section",
+                     font=("Arial", 16, "bold")).pack(pady=5)
+
+        # Stocker les performances par section
+        section_performances = {}
+
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                checkpoints = data['checkpoints']
+
+                for i in range(len(checkpoints) - 1):
+                    try:
+                        # Identifier la section
+                        section_name = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
+
+                        # Calculer le temps de la section
+                        time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
+                        time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
+                        section_time = (time2 - time1).total_seconds() / 60  # en minutes
+
+                        # Caractéristiques de la section
+                        distance = (checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'])
+                        elevation_gain = checkpoints[i]['elevation_gain']
+                        elevation_loss = checkpoints[i]['elevation_loss']
+
+                        if section_name not in section_performances:
+                            section_performances[section_name] = {
+                                'distance': distance,
+                                'elevation_gain': elevation_gain,
+                                'elevation_loss': elevation_loss,
+                                'performances': []
+                            }
+
+                        section_performances[section_name]['performances'].append({
+                            'bib': bib,
+                            'name': data['infos']['name'],
+                            'time': section_time,
+                            'speed': float(checkpoints[i]['speed'].replace('km/h', '')),
+                            'effort_speed': float(checkpoints[i]['effort_speed'].replace('km/h', ''))
+                        })
+
+                    except:
+                        continue
+
+        # Créer un sous-onglet pour chaque section significative
+        notebook = ttk.Notebook(sections_frame)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        for section_name, section_data in section_performances.items():
+            if len(section_data['performances']) > 0:
+                # Créer un onglet pour la section
+                section_frame = ttk.Frame(notebook)
+                notebook.add(section_frame, text=section_name)
+
+                # En-tête avec les informations de la section
+                header_text = (
+                    f"Distance: {section_data['distance']:.1f}km | "
+                    f"D+: {section_data['elevation_gain']}m | "
+                    f"D-: {section_data['elevation_loss']}m"
+                )
+                ttk.Label(section_frame, text=header_text).pack(pady=5)
+
+                # Trier les performances par temps
+                performances = section_data['performances']
+                performances.sort(key=lambda x: x['time'])
+
+                # Créer le tableau des performances
+                columns = ["rank", "bib", "name", "time", "speed", "effort_speed"]
+                headers = {
+                    "rank": "Pos",
+                    "bib": "Dossard",
+                    "name": "Nom",
+                    "time": "Temps",
+                    "speed": "Vitesse (km/h)",
+                    "effort_speed": "Vitesse effort (km/h)"
+                }
+
+                data = [
+                    (
+                        i + 1,
+                        perf['bib'],
+                        perf['name'],
+                        f"{int(perf['time'] // 60)}h{int(perf['time'] % 60):02d}",
+                        f"{perf['speed']:.1f}",
+                        f"{perf['effort_speed']:.1f}"
+                    )
+                    for i, perf in enumerate(performances[:10])
+                ]
+
+                tree = self.create_table(section_frame, columns, headers, data)
+                tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
 
 
 if __name__ == "__main__":
