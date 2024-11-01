@@ -45,7 +45,7 @@ class RaceDataScraper:
         """Récupère le code de la course depuis l'URL"""
         try:
             # Attendre que l'URL soit mise à jour avec le raceId avec un timeout plus court
-            time.sleep(2)
+            time.sleep(1)
             current_url = driver.current_url
             print(f"URL courante: {current_url}")
 
@@ -150,15 +150,29 @@ class RaceDataScraper:
                     except:
                         kilometer = 0
 
-                    # Extraction du temps de passage
+                    # Extraction du temps de passage (première cellule mui-1g6ia2u)
                     try:
                         passage_time = row.find_element(By.CLASS_NAME, "mui-1g6ia2u").text.strip()
                     except:
                         passage_time = "N/A"
 
-                    # Extraction du temps de course
+                    # Extraction du temps de course (modification)
                     try:
-                        race_time = row.find_element(By.CLASS_NAME, "mui-193t7sq").text.strip()
+                        # Trouver toutes les cellules qui pourraient contenir le temps de course
+                        time_cells = cells[4].find_elements(By.CLASS_NAME, "mui-193t7sq")
+                        # Prendre le premier élément qui est directement dans la cellule
+                        # (pas dans une structure imbriquée avec temps de repos)
+                        race_time = None
+                        for time_cell in time_cells:
+                            # Vérifier si l'élément parent n'a pas la classe mui-1jkxyqi
+                            # (qui est utilisée pour le temps de repos)
+                            parent = time_cell.find_element(By.XPATH, "..")
+                            if "mui-1jkxyqi" not in parent.get_attribute("class"):
+                                race_time = time_cell.text.strip()
+                                break
+
+                        if not race_time:
+                            race_time = "N/A"
                     except:
                         race_time = "N/A"
 
@@ -185,7 +199,7 @@ class RaceDataScraper:
                         speed = "N/A"
                         effort_speed = "N/A"
 
-                    # Extraction du dénivelé positif et négatif
+                        # Extraction du dénivelé positif et négatif
                     try:
                         elevation_cells = row.find_elements(By.CLASS_NAME, "mui-vm42pa")
                         if len(elevation_cells) >= 2:
@@ -204,7 +218,7 @@ class RaceDataScraper:
                         d_plus = 0
                         d_minus = 0
 
-                    # Extraction du classement et de son évolution
+                        # Extraction du classement et de son évolution
                     try:
                         rank_cells = row.find_elements(By.CLASS_NAME, "mui-ct9q29")
                         rank = None
@@ -228,8 +242,7 @@ class RaceDataScraper:
                                     if evolution_element:
                                         evolution_text = evolution_element.text.strip()
                                         evolution_match = re.search(r'[+-]?\d+',
-                                                                    evolution_text.replace('(', '').replace(')',
-                                                                                                            ''))
+                                                                    evolution_text.replace('(', '').replace(')', ''))
                                         if evolution_match:
                                             evolution = int(evolution_match.group())
                                 except:
@@ -837,7 +850,7 @@ class RaceTrackerApp:
             )
 
     def treeview_sort_column(self, col, reverse):
-        """Trie le tableau selon une colonne"""
+        """Trie le tableau selon une colonne avec gestion spéciale des classements"""
         try:
             # Récupérer toutes les données du tableau
             data = [(self.tree.set(item, col), item) for item in self.tree.get_children('')]
@@ -845,15 +858,31 @@ class RaceTrackerApp:
             # Fonction pour extraire la valeur numérique d'une chaîne
             def extract_number(text):
                 try:
-                    # Enlever les unités (m, km/h, etc.) et convertir en nombre
-                    return float(''.join(c for c in text if c.isdigit() or c in '.-'))
+                    # Si c'est un classement (colonnes spécifiques)
+                    if col in ["overall_rank", "gender_rank", "category_rank"]:
+                        # Extraire uniquement les chiffres, ignorer les autres caractères
+                        return int(''.join(filter(str.isdigit, text))) if text.strip() else float('inf')
+
+                    # Pour les autres colonnes numériques
+                    if any(c.isdigit() for c in text):
+                        # Enlever les unités (m, km/h, etc.) et convertir en nombre
+                        num = ''.join(c for c in text if c.isdigit() or c in '.-')
+                        return float(num) if num else float('inf')
+                    return text  # Retourner le texte tel quel si pas de nombre
                 except:
-                    return text
+                    return text  # En cas d'erreur, retourner le texte original
 
             # Trier les données
             try:
                 # Essayer de trier numériquement
-                data.sort(key=lambda x: extract_number(x[0]) if x[0] else float('-inf'), reverse=reverse)
+                data.sort(
+                    key=lambda x: (
+                        float('inf') if extract_number(x[0]) == '' else extract_number(x[0])
+                        if isinstance(extract_number(x[0]), (int, float))
+                        else x[0].lower()
+                    ),
+                    reverse=reverse
+                )
             except:
                 # Si échec, trier alphabétiquement
                 data.sort(reverse=reverse)
@@ -1003,540 +1032,1135 @@ class TopAnalysisWindow:
         self.scraper = scraper
         self.bibs = bibs
 
-        # Frame principal
+        # Frame principal avec défilement
         self.main_frame = ctk.CTkFrame(self.window)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        # Créer des onglets
+        # Frame pour les filtres en haut
+        self.filter_frame = ctk.CTkFrame(self.main_frame)
+        self.filter_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        # Sélecteur de course
+        ctk.CTkLabel(self.filter_frame, text="Course:").pack(side=tk.LEFT, padx=5)
+        self.race_values = self.get_unique_races()
+        self.race_selector = ctk.CTkComboBox(
+            self.filter_frame,
+            values=self.race_values,
+            command=self.on_race_selected
+        )
+        self.race_selector.pack(side=tk.LEFT, padx=5)
+        self.race_selector.set("Toutes les courses")
+
+        # Sélecteur de section (visible uniquement pour l'onglet sections)
+        self.section_frame = ctk.CTkFrame(self.filter_frame)
+        self.section_selector = None
+
+        # Créer les onglets
         self.tabview = ctk.CTkTabview(self.main_frame)
-        self.tabview.pack(fill=tk.BOTH, expand=True)
+        self.tabview.pack(fill=tk.BOTH, expand=True, pady=10)
 
         # Ajouter les onglets
         self.tab_progress = self.tabview.add("Progression")
         self.tab_elevation = self.tabview.add("Dénivelés")
-        self.tab_speed = self.tabview.add("Vitesses et Efforts")
+        self.tab_speed = self.tabview.add("Vitesses")
         self.tab_sections = self.tabview.add("Sections")
 
-        # Remplir les onglets
-        self.fill_progress_tab()
-        self.fill_elevation_tab()
-        self.fill_speed_tab()
-        self.fill_sections_tab()
+        # Créer les sous-onglets pour chaque catégorie principale
+        self.create_progression_subtabs()
+        self.create_elevation_subtabs()
+        self.create_speed_subtabs()
+        self.create_sections_subtabs()
 
-    def create_table(self, parent, columns, headers, data, height=10):
-        tree = ttk.Treeview(
-            parent,
-            columns=columns,
-            show="headings",
-            height=height
+        # Initialiser l'affichage
+        self.update_displays()
+
+    def get_unique_races(self):
+        races = set()
+        races.add("Toutes les courses")
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                race_name = self.scraper.all_data[str(bib)]['infos']['race_name']
+                races.add(race_name)
+        return sorted(list(races))
+
+    def create_progression_subtabs(self):
+        self.progress_tabs = ctk.CTkTabview(self.tab_progress)
+        self.progress_tabs.pack(fill=tk.BOTH, expand=True)
+
+        self.progress_global = self.progress_tabs.add("Progression globale")
+        self.progress_sections = self.progress_tabs.add("Entre points")
+
+        # Ajouter ScrollArea pour chaque sous-onglet
+        self.progress_global_scroll = ctk.CTkScrollableFrame(self.progress_global)
+        self.progress_global_scroll.pack(fill=tk.BOTH, expand=True)
+
+        self.progress_sections_scroll = ctk.CTkScrollableFrame(self.progress_sections)
+        self.progress_sections_scroll.pack(fill=tk.BOTH, expand=True)
+
+    def create_elevation_subtabs(self):
+        self.elevation_tabs = ctk.CTkTabview(self.tab_elevation)
+        self.elevation_tabs.pack(fill=tk.BOTH, expand=True)
+
+        self.elevation_climbers = self.elevation_tabs.add("Grimpeurs")
+        self.elevation_descenders = self.elevation_tabs.add("Descendeurs")
+
+        self.climbers_scroll = ctk.CTkScrollableFrame(self.elevation_climbers)
+        self.climbers_scroll.pack(fill=tk.BOTH, expand=True)
+
+        self.descenders_scroll = ctk.CTkScrollableFrame(self.elevation_descenders)
+        self.descenders_scroll.pack(fill=tk.BOTH, expand=True)
+
+    def create_speed_subtabs(self):
+        self.speed_tabs = ctk.CTkTabview(self.tab_speed)
+        self.speed_tabs.pack(fill=tk.BOTH, expand=True)
+
+        self.speed_avg = self.speed_tabs.add("Vitesse moyenne")
+        self.speed_effort = self.speed_tabs.add("Vitesse effort")
+        self.speed_sections = self.speed_tabs.add("Entre points")
+
+        self.speed_avg_scroll = ctk.CTkScrollableFrame(self.speed_avg)
+        self.speed_avg_scroll.pack(fill=tk.BOTH, expand=True)
+
+        self.speed_effort_scroll = ctk.CTkScrollableFrame(self.speed_effort)
+        self.speed_effort_scroll.pack(fill=tk.BOTH, expand=True)
+
+        self.speed_sections_scroll = ctk.CTkScrollableFrame(self.speed_sections)
+        self.speed_sections_scroll.pack(fill=tk.BOTH, expand=True)
+
+    def create_sections_subtabs(self):
+        self.sections_frame = ctk.CTkFrame(self.tab_sections)
+        self.sections_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Ajouter le sélecteur de sections
+        self.section_frame.pack(side=tk.LEFT, padx=20)
+        ctk.CTkLabel(self.section_frame, text="Section:").pack(side=tk.LEFT, padx=5)
+        self.section_selector = ctk.CTkComboBox(
+            self.section_frame,
+            values=[],
+            command=self.on_section_selected
         )
+        self.section_selector.pack(side=tk.LEFT, padx=5)
 
-        # Configuration du style
+        # Frame pour les résultats de section avec scroll
+        self.section_results_scroll = ctk.CTkScrollableFrame(self.sections_frame)
+        self.section_results_scroll.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def on_race_selected(self, selection):
+        # Mettre à jour les sections disponibles
+        self.update_section_selector(selection)
+        # Mettre à jour tous les affichages
+        self.update_displays()
+
+    def on_section_selected(self, selection):
+        # Mettre à jour l'affichage des performances de la section
+        self.update_section_display()
+
+    def update_section_selector(self, race):
+        """Mettre à jour la liste des sections avec les dénivelés corrects"""
+        sections = {}  # Utiliser un dictionnaire pour stocker les infos de section
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                if race == "Toutes les courses" or data['infos']['race_name'] == race:
+                    checkpoints = data['checkpoints']
+                    for i in range(len(checkpoints) - 1):
+                        section_name = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
+                        sections[section_name] = {
+                            'distance': checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'],
+                            'elevation_gain': checkpoints[i + 1]['elevation_gain'],
+                            # Prendre le dénivelé du point d'arrivée
+                            'elevation_loss': checkpoints[i + 1]['elevation_loss']
+                            # Prendre le dénivelé du point d'arrivée
+                        }
+
+        self.section_selector.configure(values=sorted(list(sections.keys())))
+        if sections:
+            self.section_selector.set(sorted(list(sections.keys()))[0])
+
+        # Stocker les informations des sections pour les utiliser plus tard
+        self.sections_info = sections
+
+    def update_displays(self):
+        """Mettre à jour tous les affichages en fonction de la course sélectionnée"""
+        self.clear_all_displays()
+        selected_race = self.race_selector.get()
+
+        # Mettre à jour les progressions
+        self.update_progression_displays(selected_race)
+
+        # Mettre à jour les dénivelés
+        self.update_elevation_displays(selected_race)
+
+        # Mettre à jour les vitesses
+        self.update_speed_displays(selected_race)
+
+        # Mettre à jour l'affichage des sections
+        self.update_section_display()
+
+    def clear_all_displays(self):
+        """Effacer tous les affichages existants"""
+        for widget in self.progress_global_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.progress_sections_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.climbers_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.descenders_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.speed_avg_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.speed_effort_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.speed_sections_scroll.winfo_children():
+            widget.destroy()
+        for widget in self.section_results_scroll.winfo_children():
+            widget.destroy()
+
+    def create_table(self, parent, columns, headers, data, height=10, tooltips=None):
+        """Créer un tableau personnalisé avec style uniforme et infobulles"""
         style = ttk.Style()
         style.configure(
-            "Treeview",
+            "Custom.Treeview",
             background="#2b2b2b",
             foreground="white",
-            fieldbackground="#2b2b2b"
+            fieldbackground="#2b2b2b",
+            rowheight=30
         )
         style.configure(
-            "Treeview.Heading",
+            "Custom.Treeview.Heading",
             background="#2b2b2b",
             foreground="white"
         )
 
-        for col in columns:
-            tree.heading(col, text=headers[col])
-            tree.column(col, width=100, anchor="center")
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=height,
+            style="Custom.Treeview"
+        )
 
+        # Création des infobulles
+        tooltip = None
+        if tooltips:
+            from tkinter import messagebox
+            def show_tooltip(event):
+                column = tree.identify_column(event.x)
+                col_id = int(column.replace('#', '')) - 1
+                if col_id < len(columns) and columns[col_id] in tooltips:
+                    messagebox.showinfo("Information", tooltips[columns[col_id]])
+
+            tree.bind('<Button-3>', show_tooltip)  # Clic droit pour afficher l'infobulle
+
+        for col in columns:
+            header_text = headers[col]
+            if tooltips and col in tooltips:
+                header_text += " (❓)"  # Ajouter un indicateur visuel
+            tree.heading(col, text=header_text)
+            tree.column(col, width=headers.get(f"{col}_width", 100), anchor="center")
+
+        # Ajouter les données
         for row in data:
             tree.insert("", "end", values=row)
 
         return tree
 
-    def fill_progress_tab(self):
-        frame = ctk.CTkFrame(self.tab_progress)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    def create_section_info_card(self, parent, section_info):
+        """Créer une carte d'information pour une section avec infobulles"""
+        frame = ctk.CTkFrame(parent)
+        frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Meilleurs progressions globales
-        global_progression_frame = ctk.CTkFrame(frame)
-        global_progression_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(global_progression_frame, text="Meilleures progressions globales",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+        title = ctk.CTkLabel(
+            frame,
+            text=section_info['name'],
+            font=("Arial", 16, "bold")
+        )
+        title.pack(pady=5)
 
-        # Calculer les progressions globales
+        # Création d'un frame pour les informations avec infobulles
+        info_frame = ctk.CTkFrame(frame)
+        info_frame.pack(pady=5)
+
+        # Distance
+        distance_frame = ctk.CTkFrame(info_frame)
+        distance_frame.pack(side=tk.LEFT, padx=10)
+        distance_label = ctk.CTkLabel(
+            distance_frame,
+            text=f"Distance: {section_info['distance']:.1f}km"
+        )
+        distance_label.pack(side=tk.LEFT)
+
+        def show_distance_info():
+            messagebox.showinfo("Information",
+                                "Distance horizontale entre les deux points de la section.")
+
+        distance_info = ctk.CTkButton(
+            distance_frame,
+            text="❓",
+            width=20,
+            command=show_distance_info
+        )
+        distance_info.pack(side=tk.LEFT, padx=2)
+
+        # Dénivelé positif
+        dplus_frame = ctk.CTkFrame(info_frame)
+        dplus_frame.pack(side=tk.LEFT, padx=10)
+        dplus_label = ctk.CTkLabel(
+            dplus_frame,
+            text=f"D+: {section_info['elevation_gain']}m"
+        )
+        dplus_label.pack(side=tk.LEFT)
+
+        def show_dplus_info():
+            messagebox.showinfo("Information",
+                                "Dénivelé positif accumulé sur la section.\n"
+                                "Représente la somme des montées uniquement.")
+
+        dplus_info = ctk.CTkButton(
+            dplus_frame,
+            text="❓",
+            width=20,
+            command=show_dplus_info
+        )
+        dplus_info.pack(side=tk.LEFT, padx=2)
+
+        # Dénivelé négatif
+        dminus_frame = ctk.CTkFrame(info_frame)
+        dminus_frame.pack(side=tk.LEFT, padx=10)
+        dminus_label = ctk.CTkLabel(
+            dminus_frame,
+            text=f"D-: {section_info['elevation_loss']}m"
+        )
+        dminus_label.pack(side=tk.LEFT)
+
+        def show_dminus_info():
+            messagebox.showinfo("Information",
+                                "Dénivelé négatif accumulé sur la section.\n"
+                                "Représente la somme des descentes uniquement.")
+
+        dminus_info = ctk.CTkButton(
+            dminus_frame,
+            text="❓",
+            width=20,
+            command=show_dminus_info
+        )
+        dminus_info.pack(side=tk.LEFT, padx=2)
+
+        return frame
+
+
+    def update_progression_displays(self, selected_race):
+        """Mettre à jour les affichages de progression"""
+        # Progression globale
         global_progressions = []
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
+                    if len(checkpoints) >= 2:
+                        first_rank = None
+                        last_rank = None
 
-                if len(checkpoints) >= 2:
-                    first_rank = None
-                    last_rank = None
+                        for cp in checkpoints:
+                            if cp['rank'] is not None:
+                                try:
+                                    rank = int(cp['rank'])
+                                    if first_rank is None:
+                                        first_rank = rank
+                                    last_rank = rank
+                                except ValueError:
+                                    continue
 
-                    for cp in checkpoints:
-                        if cp['rank'] is not None:
-                            try:
-                                rank = int(cp['rank'])
-                                if first_rank is None:
-                                    first_rank = rank
-                                last_rank = rank
-                            except ValueError:
-                                continue
+                        if first_rank is not None and last_rank is not None:
+                            progression = first_rank - last_rank
+                            global_progressions.append({
+                                'progression': progression,
+                                'bib': bib,
+                                'name': data['infos']['name'],
+                                'race': data['infos']['race_name'],
+                                'start_pos': first_rank,
+                                'end_pos': last_rank
+                            })
 
-                    if first_rank is not None and last_rank is not None:
-                        progression = first_rank - last_rank
-                        if progression != 0:
-                            global_progressions.append((
-                                progression,
-                                bib,
-                                data['infos']['name'],
-                                first_rank,
-                                last_rank
-                            ))
+        # Trier et afficher les meilleures progressions
+        global_progressions.sort(key=lambda x: x['progression'], reverse=True)
 
-        # Trier et afficher les meilleures progressions globales
-        global_progressions.sort(reverse=True)
-        columns = ["rank", "bib", "name", "start_pos", "end_pos", "progression"]
+        columns = ["rank", "bib", "name", "race", "start_pos", "end_pos", "progression"]
         headers = {
-            "rank": "Pos",
+            "rank": "Position",
+            "rank_width": 80,
             "bib": "Dossard",
+            "bib_width": 80,
             "name": "Nom",
-            "start_pos": "Position départ",
-            "end_pos": "Position finale",
-            "progression": "Progression"
+            "name_width": 200,
+            "race": "Course",
+            "race_width": 150,
+            "start_pos": "Pos. départ",
+            "start_pos_width": 100,
+            "end_pos": "Pos. finale",
+            "end_pos_width": 100,
+            "progression": "Progression",
+            "progression_width": 100
         }
 
-        data = [(i + 1, *prog[1:], f"{'+' if prog[0] > 0 else ''}{prog[0]}")
-                for i, prog in enumerate(global_progressions[:10])]
-        tree = self.create_table(global_progression_frame, columns, headers, data)
-        tree.pack(fill=tk.X, padx=5, pady=5)
+        data = [
+            (
+                i + 1,
+                prog['bib'],
+                prog['name'],
+                prog['race'],
+                prog['start_pos'],
+                prog['end_pos'],
+                f"+{prog['progression']}" if prog['progression'] > 0 else str(prog['progression'])
+            )
+            for i, prog in enumerate(global_progressions[:20])
+        ]
 
-        # Meilleures progressions entre points
-        point_progression_frame = ctk.CTkFrame(frame)
-        point_progression_frame.pack(fill=tk.X, padx=5, pady=15)
-        ctk.CTkLabel(point_progression_frame, text="Meilleures progressions entre points",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+        # Ajouter les tooltips pour la progression globale
+        tooltips = {
+            "progression": "Places gagnées entre le premier et le dernier point de passage.",
+            "start_pos": "Position au premier point de chronométrage.",
+            "end_pos": "Position finale du coureur."
+        }
 
-        point_progressions = []
+        if data:
+            ctk.CTkLabel(
+                self.progress_global_scroll,
+                text="Top 20 des meilleures progressions (Clic droit sur les en-têtes pour plus d'informations)",
+                font=("Arial", 16, "bold")
+            ).pack(pady=10)
+
+            tree = self.create_table(self.progress_global_scroll, columns, headers, data, tooltips=tooltips)
+            tree.pack(fill=tk.X, padx=5, pady=5)
+
+        # Ajouter les tooltips pour la progression entre points
+        section_tooltips = {
+            "section": "Points de passage entre lesquels la progression est calculée",
+            "progression": "Nombre de places gagnées sur cette section spécifique",
+            "ranks": "Positions au début et à la fin de la section"
+        }
+
+
+        # Progression entre points
+        section_progressions = []
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
 
-                for i in range(len(checkpoints) - 1):
-                    if (checkpoints[i]['rank'] is not None and
-                            checkpoints[i + 1]['rank'] is not None):
-                        try:
-                            rank1 = int(checkpoints[i]['rank'])
-                            rank2 = int(checkpoints[i + 1]['rank'])
-                            progression = rank1 - rank2
-                            if progression > 0:
-                                point_progressions.append((
-                                    progression,
-                                    bib,
-                                    data['infos']['name'],
-                                    checkpoints[i]['point'],
-                                    checkpoints[i + 1]['point'],
-                                    rank1,
-                                    rank2
-                                ))
-                        except ValueError:
-                            continue
+                    for i in range(len(checkpoints) - 1):
+                        if checkpoints[i]['rank'] and checkpoints[i + 1]['rank']:
+                            try:
+                                rank1 = int(checkpoints[i]['rank'])
+                                rank2 = int(checkpoints[i + 1]['rank'])
+                                progression = rank1 - rank2
+                                if progression > 0:
+                                    section_progressions.append({
+                                        'progression': progression,
+                                        'bib': bib,
+                                        'name': data['infos']['name'],
+                                        'race': data['infos']['race_name'],
+                                        'from_point': checkpoints[i]['point'],
+                                        'to_point': checkpoints[i + 1]['point'],
+                                        'start_rank': rank1,
+                                        'end_rank': rank2
+                                    })
+                            except ValueError:
+                                continue
 
-        point_progressions.sort(reverse=True)
-        columns = ["rank", "bib", "name", "from_point", "to_point", "positions"]
-        headers = {
-            "rank": "Pos",
-            "bib": "Dossard",
-            "name": "Nom",
-            "from_point": "De",
-            "to_point": "À",
-            "positions": "Places gagnées"
-        }
+        section_progressions.sort(key=lambda x: x['progression'], reverse=True)
 
-        data = [(i + 1, *prog[1:4], prog[4], f"+{prog[0]}")
-                for i, prog in enumerate(point_progressions[:10])]
-        tree = self.create_table(point_progression_frame, columns, headers, data)
-        tree.pack(fill=tk.X, padx=5, pady=5)
+        if section_progressions:
+            ctk.CTkLabel(
+                self.progress_sections_scroll,
+                text="Top 20 des meilleures progressions entre points",
+                font=("Arial", 16, "bold")
+            ).pack(pady=10)
 
-    def fill_elevation_tab(self):
-        frame = ctk.CTkFrame(self.tab_elevation)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            columns = ["rank", "bib", "name", "race", "section", "progression", "ranks"]
+            headers = {
+                "rank": "Position",
+                "rank_width": 80,
+                "bib": "Dossard",
+                "bib_width": 80,
+                "name": "Nom",
+                "name_width": 200,
+                "race": "Course",
+                "race_width": 150,
+                "section": "Section",
+                "section_width": 300,
+                "progression": "Progression",
+                "progression_width": 100,
+                "ranks": "Classements",
+                "ranks_width": 150
+            }
 
-        # Meilleurs grimpeurs (vitesse ascensionnelle)
-        climbing_frame = ctk.CTkFrame(frame)
-        climbing_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(climbing_frame, text="Meilleurs grimpeurs",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+            data = [
+                (
+                    i + 1,
+                    prog['bib'],
+                    prog['name'],
+                    prog['race'],
+                    f"{prog['from_point']} → {prog['to_point']}",
+                    f"+{prog['progression']}",
+                    f"{prog['start_rank']} → {prog['end_rank']}"
+                )
+                for i, prog in enumerate(section_progressions[:20])
+            ]
 
+            tree = self.create_table(self.progress_sections_scroll, columns, headers, data)
+            tree.pack(fill=tk.X, padx=5, pady=5)
+
+    def update_elevation_displays(self, selected_race):
+        """Mettre à jour les affichages de dénivelé avec tooltips et indicateurs de tendance"""
+        # Calcul pour les grimpeurs
         climbers = []
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
+                    total_elevation_time = 0
+                    total_elevation_gain = 0
+                    total_distance = 0
 
-                # Calculer la vitesse ascensionnelle moyenne sur les sections positives
-                total_elevation_time = 0
-                total_elevation_gain = 0
+                    for i in range(len(checkpoints) - 1):
+                        if checkpoints[i]['elevation_gain'] > 100:  # Sections significatives
+                            try:
+                                time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
+                                time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
+                                segment_time = (time2 - time1).total_seconds() / 3600
+                                distance = checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer']
 
-                for i in range(len(checkpoints) - 1):
-                    if checkpoints[i]['elevation_gain'] > 100:  # Sections significatives
-                        try:
-                            time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
-                            time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
-                            segment_time = (time2 - time1).total_seconds() / 3600  # en heures
+                                if segment_time > 0:
+                                    total_elevation_time += segment_time
+                                    total_elevation_gain += checkpoints[i]['elevation_gain']
+                                    total_distance += distance
+                            except:
+                                continue
 
-                            if segment_time > 0:
-                                total_elevation_time += segment_time
-                                total_elevation_gain += checkpoints[i]['elevation_gain']
-                        except:
-                            continue
+                    if total_elevation_time > 0:
+                        climbing_speed = total_elevation_gain / total_elevation_time
+                        # Calculer le ratio dénivelé/distance pour évaluer la difficulté
+                        elevation_ratio = total_elevation_gain / (total_distance * 1000) if total_distance > 0 else 0
+                        climbers.append({
+                            'speed': climbing_speed,
+                            'bib': bib,
+                            'name': data['infos']['name'],
+                            'race': data['infos']['race_name'],
+                            'elevation_gain': total_elevation_gain,
+                            'time': total_elevation_time,
+                            'distance': total_distance,
+                            'elevation_ratio': elevation_ratio
+                        })
 
-                if total_elevation_time > 0:
-                    climbing_speed = total_elevation_gain / total_elevation_time
-                    climbers.append((
-                        climbing_speed,
-                        bib,
-                        data['infos']['name'],
-                        total_elevation_gain,
-                        total_elevation_time,
-                        f"{climbing_speed:.1f}"
-                    ))
+        climbers.sort(key=lambda x: x['speed'], reverse=True)
 
-        climbers.sort(reverse=True)
-        columns = ["rank", "bib", "name", "d_plus", "time", "speed"]
-        headers = {
-            "rank": "Pos",
-            "bib": "Dossard",
-            "name": "Nom",
-            "d_plus": "D+ Total (m)",
-            "time": "Temps (h)",
-            "speed": "Vitesse (m/h)"
+        # Tooltips pour les grimpeurs
+        climber_tooltips = {
+            "elevation": "Dénivelé positif total cumulé sur les sections de montée significative (>100m D+)",
+            "time": "Temps total passé sur les sections de montée significative",
+            "speed": "Vitesse verticale moyenne en montée (mètres de dénivelé par heure)",
+            "ratio": "Pourcentage moyen de pente (D+ / Distance horizontale)",
+            "tendency": "Indicateur de difficulté basé sur le ratio dénivelé/distance"
         }
 
-        data = [(i + 1, *climb[1:]) for i, climb in enumerate(climbers[:10])]
-        tree = self.create_table(climbing_frame, columns, headers, data)
-        tree.pack(fill=tk.X, padx=5, pady=5)
+        if climbers:
+            ctk.CTkLabel(
+                self.climbers_scroll,
+                text="Top 20 des meilleurs grimpeurs (Clic droit sur les en-têtes pour plus d'informations)",
+                font=("Arial", 16, "bold")
+            ).pack(pady=10)
 
-        # Meilleurs descendeurs
-        descending_frame = ctk.CTkFrame(frame)
-        descending_frame.pack(fill=tk.X, padx=5, pady=15)
-        ctk.CTkLabel(descending_frame, text="Meilleurs descendeurs",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+            columns = ["rank", "bib", "name", "race", "elevation", "time", "speed", "ratio", "tendency"]
+            headers = {
+                "rank": "Position",
+                "rank_width": 80,
+                "bib": "Dossard",
+                "bib_width": 80,
+                "name": "Nom",
+                "name_width": 200,
+                "race": "Course",
+                "race_width": 150,
+                "elevation": "D+ total",
+                "elevation_width": 100,
+                "time": "Temps",
+                "time_width": 100,
+                "speed": "Vitesse",
+                "speed_width": 100,
+                "ratio": "Pente moy.",
+                "ratio_width": 100,
+                "tendency": "Tendance",
+                "tendency_width": 80
+            }
 
+            def get_climb_indicator(ratio):
+                if ratio > 0.15:  # >15%
+                    return "↗️↗️↗️"  # Très raide
+                elif ratio > 0.10:  # >10%
+                    return "↗️↗️"  # Raide
+                else:
+                    return "↗️"  # Modéré
+
+            data = [
+                (
+                    i + 1,
+                    climb['bib'],
+                    climb['name'],
+                    climb['race'],
+                    f"{climb['elevation_gain']}m",
+                    f"{climb['time']:.1f}h",
+                    f"{climb['speed']:.1f} m/h",
+                    f"{(climb['elevation_ratio'] * 100):.1f}%",
+                    get_climb_indicator(climb['elevation_ratio'])
+                )
+                for i, climb in enumerate(climbers[:20])
+            ]
+
+            tree = self.create_table(self.climbers_scroll, columns, headers, data, tooltips=climber_tooltips)
+            tree.pack(fill=tk.X, padx=5, pady=5)
+
+        # Descente (avec les mêmes améliorations)
         descenders = []
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
+                    total_descent_time = 0
+                    total_elevation_loss = 0
+                    total_distance = 0
 
-                total_descent_time = 0
-                total_elevation_loss = 0
+                    for i in range(len(checkpoints) - 1):
+                        if checkpoints[i]['elevation_loss'] > 100:
+                            try:
+                                time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
+                                time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
+                                segment_time = (time2 - time1).total_seconds() / 3600
+                                distance = checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer']
 
-                for i in range(len(checkpoints) - 1):
-                    if checkpoints[i]['elevation_loss'] > 100:  # Sections significatives
+                                if segment_time > 0:
+                                    total_descent_time += segment_time
+                                    total_elevation_loss += abs(checkpoints[i]['elevation_loss'])
+                                    total_distance += distance
+                            except:
+                                continue
+
+                    if total_descent_time > 0:
+                        descending_speed = total_elevation_loss / total_descent_time
+                        elevation_ratio = total_elevation_loss / (total_distance * 1000) if total_distance > 0 else 0
+                        descenders.append({
+                            'speed': descending_speed,
+                            'bib': bib,
+                            'name': data['infos']['name'],
+                            'race': data['infos']['race_name'],
+                            'elevation_loss': total_elevation_loss,
+                            'time': total_descent_time,
+                            'distance': total_distance,
+                            'elevation_ratio': elevation_ratio
+                        })
+
+        descenders.sort(key=lambda x: x['speed'], reverse=True)
+
+        # Tooltips pour les descendeurs
+        descender_tooltips = {
+            "elevation": "Dénivelé négatif total cumulé sur les sections de descente significative (>100m D-)",
+            "time": "Temps total passé sur les sections de descente significative",
+            "speed": "Vitesse verticale moyenne en descente (mètres de dénivelé par heure)",
+            "ratio": "Pourcentage moyen de pente (D- / Distance horizontale)",
+            "tendency": "Indicateur de difficulté basé sur le ratio dénivelé/distance"
+        }
+
+        if descenders:
+            ctk.CTkLabel(
+                self.descenders_scroll,
+                text="Top 20 des meilleurs descendeurs (Clic droit sur les en-têtes pour plus d'informations)",
+                font=("Arial", 16, "bold")
+            ).pack(pady=10)
+
+            def get_descent_indicator(ratio):
+                if ratio > 0.15:  # >15%
+                    return "↘️↘️↘️"  # Très raide
+                elif ratio > 0.10:  # >10%
+                    return "↘️↘️"  # Raide
+                else:
+                    return "↘️"  # Modéré
+
+            data = [
+                (
+                    i + 1,
+                    desc['bib'],
+                    desc['name'],
+                    desc['race'],
+                    f"{desc['elevation_loss']}m",
+                    f"{desc['time']:.1f}h",
+                    f"{desc['speed']:.1f} m/h",
+                    f"{(desc['elevation_ratio'] * 100):.1f}%",
+                    get_descent_indicator(desc['elevation_ratio'])
+                )
+                for i, desc in enumerate(descenders[:20])
+            ]
+
+            tree = self.create_table(self.descenders_scroll, columns, headers, data, tooltips=descender_tooltips)
+            tree.pack(fill=tk.X, padx=5, pady=5)
+
+    def update_speed_displays(self, selected_race):
+        """Mettre à jour les affichages de vitesse"""
+        speeds = []
+        efforts = []
+        section_speeds = []
+
+        for bib in self.bibs:
+            if str(bib) in self.scraper.all_data:
+                data = self.scraper.all_data[str(bib)]
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
+
+                    # Calcul des vitesses moyennes
+                    avg_speed = 0
+                    avg_effort = 0
+                    count = 0
+
+                    for cp in checkpoints:
+                        try:
+                            speed = float(cp['speed'].replace('km/h', '').strip())
+                            effort = float(cp['effort_speed'].replace('km/h', '').strip())
+                            avg_speed += speed
+                            avg_effort += effort
+                            count += 1
+                        except:
+                            continue
+
+                    if count > 0:
+                        speeds.append({
+                            'speed': avg_speed / count,
+                            'bib': bib,
+                            'name': data['infos']['name'],
+                            'race': data['infos']['race_name']
+                        })
+
+                        efforts.append({
+                            'effort': avg_effort / count,
+                            'bib': bib,
+                            'name': data['infos']['name'],
+                            'race': data['infos']['race_name']
+                        })
+
+                    # Calcul des vitesses par section
+                    for i in range(len(checkpoints) - 1):
                         try:
                             time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
                             time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
                             segment_time = (time2 - time1).total_seconds() / 3600
+                            distance = checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer']
 
                             if segment_time > 0:
-                                total_descent_time += segment_time
-                                total_elevation_loss += abs(checkpoints[i]['elevation_loss'])
+                                section_speed = distance / segment_time
+                                section_speeds.append({
+                                    'speed': section_speed,
+                                    'bib': bib,
+                                    'name': data['infos']['name'],
+                                    'race': data['infos']['race_name'],
+                                    'from_point': checkpoints[i]['point'],
+                                    'to_point': checkpoints[i + 1]['point'],
+                                    'distance': distance
+                                })
                         except:
                             continue
 
-                if total_descent_time > 0:
-                    descending_speed = total_elevation_loss / total_descent_time
-                    descenders.append((
-                        descending_speed,
-                        bib,
-                        data['infos']['name'],
-                        total_elevation_loss,
-                        total_descent_time,
-                        f"{descending_speed:.1f}"
-                    ))
+        # Afficher les vitesses moyennes
+        speeds.sort(key=lambda x: x['speed'], reverse=True)
+        self.display_speed_table(
+            self.speed_avg_scroll,
+            speeds[:20],
+            "Top 20 des meilleures vitesses moyennes",
+            "speed"
+        )
 
-        descenders.sort(reverse=True)
-        columns = ["rank", "bib", "name", "d_minus", "time", "speed"]
-        headers = {
-            "rank": "Pos",
-            "bib": "Dossard",
-            "name": "Nom",
-            "d_minus": "D- Total (m)",
-            "time": "Temps (h)",
-            "speed": "Vitesse (m/h)"
+        # Afficher les vitesses effort
+        efforts.sort(key=lambda x: x['effort'], reverse=True)
+        self.display_speed_table(
+            self.speed_effort_scroll,
+            efforts[:20],
+            "Top 20 des meilleures vitesses effort",
+            "effort"
+        )
+
+        # Afficher les vitesses par section
+        section_speeds.sort(key=lambda x: x['speed'], reverse=True)
+        self.display_section_speed_table(
+            self.speed_sections_scroll,
+            section_speeds[:20]
+        )
+
+    def display_speed_table(self, parent, data, title, speed_type):
+        """Afficher un tableau de vitesses avec infobulles"""
+        if not data:
+            return
+
+        tooltips = {
+            "speed": {
+                'speed': "Moyenne des vitesses instantanées sur l'ensemble du parcours (sans tenir compte du dénivelé).",
+                'effort': "Moyenne des vitesses effort qui prennent en compte le dénivelé. Permet de comparer l'intensité réelle de l'effort."
+            }[speed_type]
         }
 
-        data = [(i + 1, *desc[1:]) for i, desc in enumerate(descenders[:10])]
-        tree = self.create_table(descending_frame, columns, headers, data)
-        tree.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(
+            parent,
+            text=title + " (Clic droit sur les en-têtes pour plus d'informations)",
+            font=("Arial", 16, "bold")
+        ).pack(pady=10)
 
-    def fill_speed_tab(self):
-        frame = ctk.CTkFrame(self.tab_speed)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Vitesses moyennes les plus élevées
-        speed_frame = ctk.CTkFrame(frame)
-        speed_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(speed_frame, text="Meilleures vitesses moyennes",
-                     font=("Arial", 16, "bold")).pack(pady=5)
-
-        speeds = []
-        for bib in self.bibs:
-            if str(bib) in self.scraper.all_data:
-                data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
-
-                total_speed = 0
-                count = 0
-                max_speed = 0
-
-                for cp in checkpoints:
-                    try:
-                        speed = float(cp['speed'].replace('km/h', '').strip())
-                        total_speed += speed
-                        count += 1
-                        max_speed = max(max_speed, speed)
-                    except:
-                        continue
-
-                if count > 0:
-                    avg_speed = total_speed / count
-                    speeds.append((
-                        avg_speed,
-                        bib,
-                        data['infos']['name'],
-                        max_speed,
-                        f"{avg_speed:.1f}"
-                    ))
-
-        speeds.sort(reverse=True)
-        columns = ["rank", "bib", "name", "max_speed", "avg_speed"]
+        columns = ["rank", "bib", "name", "race", "speed"]
         headers = {
-            "rank": "Pos",
+            "rank": "Position",
+            "rank_width": 80,
             "bib": "Dossard",
+            "bib_width": 80,
             "name": "Nom",
-            "max_speed": "Vitesse max (km/h)",
-            "avg_speed": "Vitesse moy (km/h)"
+            "name_width": 200,
+            "race": "Course",
+            "race_width": 150,
+            "speed": {
+                'speed': "Vitesse moyenne",
+                'effort': "Vitesse effort moyenne"
+            }[speed_type],
+            "speed_width": 100
         }
 
-        data = [(i + 1, *spd[1:]) for i, spd in enumerate(speeds[:10])]
-        tree = self.create_table(speed_frame, columns, headers, data)
+        table_data = [
+            (
+                i + 1,
+                item['bib'],
+                item['name'],
+                item['race'],
+                f"{item[speed_type]:.1f} km/h"
+            )
+            for i, item in enumerate(data)
+        ]
+
+        tree = self.create_table(parent, columns, headers, table_data, tooltips=tooltips)
         tree.pack(fill=tk.X, padx=5, pady=5)
 
-        # Meilleures vitesses effort
-        effort_frame = ctk.CTkFrame(frame)
-        effort_frame.pack(fill=tk.X, padx=5, pady=15)
-        ctk.CTkLabel(effort_frame, text="Meilleures vitesses effort",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+    def display_section_speed_table(self, parent, data):
+        """Afficher un tableau de vitesses par section avec infobulles"""
+        if not data:
+            return
 
-        efforts = []
-        for bib in self.bibs:
-            if str(bib) in self.scraper.all_data:
-                data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
-
-                total_effort = 0
-                count = 0
-                max_effort = 0
-
-                for cp in checkpoints:
-                    try:
-                        effort_speed = float(cp['effort_speed'].replace('km/h', '').strip())
-                        total_effort += effort_speed
-                        count += 1
-                        max_effort = max(max_effort, effort_speed)
-                    except:
-                        continue
-
-                if count > 0:
-                    avg_effort = total_effort / count
-                    efforts.append((
-                        avg_effort,
-                        bib,
-                        data['infos']['name'],
-                        max_effort,
-                        f"{avg_effort:.1f}"
-                    ))
-
-        efforts.sort(reverse=True)
-        columns = ["rank", "bib", "name", "max_effort", "avg_effort"]
-        headers = {
-            "rank": "Pos",
-            "bib": "Dossard",
-            "name": "Nom",
-            "max_effort": "Vitesse effort max (km/h)",
-            "avg_effort": "Vitesse effort moy (km/h)"
+        tooltips = {
+            "speed": "Vitesse moyenne réelle sur la section calculée avec (Distance / Temps).\nNe prend pas en compte le dénivelé.",
+            "distance": "Distance horizontale entre les deux points de la section.",
+            "section": "Points de début et de fin de la section."
         }
 
-        data = [(i + 1, *eff[1:]) for i, eff in enumerate(efforts[:10])]
-        tree = self.create_table(effort_frame, columns, headers, data)
-        tree.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(
+            parent,
+            text="Top 20 des meilleures vitesses par section (Clic droit sur les en-têtes pour plus d'informations)",
+            font=("Arial", 16, "bold")
+        ).pack(pady=10)
 
-        # Coureurs les plus réguliers
-        regularity_frame = ctk.CTkFrame(frame)
-        regularity_frame.pack(fill=tk.X, padx=5, pady=15)
-        ctk.CTkLabel(regularity_frame, text="Coureurs les plus réguliers",
-                     font=("Arial", 16, "bold")).pack(pady=5)
-
-        regularities = []
-        for bib in self.bibs:
-            if str(bib) in self.scraper.all_data:
-                data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
-
-                speeds = []
-                effort_speeds = []
-
-                for cp in checkpoints:
-                    try:
-                        speed = float(cp['speed'].replace('km/h', '').strip())
-                        effort_speed = float(cp['effort_speed'].replace('km/h', '').strip())
-                        speeds.append(speed)
-                        effort_speeds.append(effort_speed)
-                    except:
-                        continue
-
-                if len(speeds) > 2:
-                    avg_speed = sum(speeds) / len(speeds)
-                    speed_variations = [abs(s - avg_speed) for s in speeds]
-                    avg_speed_variation = sum(speed_variations) / len(speed_variations)
-
-                    avg_effort = sum(effort_speeds) / len(effort_speeds)
-                    effort_variations = [abs(e - avg_effort) for e in effort_speeds]
-                    avg_effort_variation = sum(effort_variations) / len(effort_variations)
-
-                    # Coefficient de régularité combiné
-                    regularity_score = (avg_speed_variation / avg_speed +
-                                        avg_effort_variation / avg_effort) / 2
-
-                    regularities.append((
-                        regularity_score,
-                        bib,
-                        data['infos']['name'],
-                        f"{avg_speed:.1f}",
-                        f"{avg_effort:.1f}",
-                        f"{regularity_score:.2f}"
-                    ))
-
-        regularities.sort()  # Plus petite variation en premier
-        columns = ["rank", "bib", "name", "avg_speed", "avg_effort", "regularity"]
+        columns = ["rank", "bib", "name", "race", "section", "distance", "speed"]
         headers = {
-            "rank": "Pos",
+            "rank": "Position",
+            "rank_width": 80,
             "bib": "Dossard",
+            "bib_width": 80,
             "name": "Nom",
-            "avg_speed": "Vitesse moy (km/h)",
-            "avg_effort": "Effort moy (km/h)",
-            "regularity": "Score régularité"
+            "name_width": 200,
+            "race": "Course",
+            "race_width": 150,
+            "section": "Section",
+            "section_width": 300,
+            "distance": "Distance",
+            "distance_width": 100,
+            "speed": "Vitesse",
+            "speed_width": 100
         }
 
-        data = [(i + 1, *reg[1:]) for i, reg in enumerate(regularities[:10])]
-        tree = self.create_table(regularity_frame, columns, headers, data)
+        table_data = [
+            (
+                i + 1,
+                item['bib'],
+                item['name'],
+                item['race'],
+                f"{item['from_point']} → {item['to_point']}",
+                f"{item['distance']:.1f} km",
+                f"{item['speed']:.1f} km/h"
+            )
+            for i, item in enumerate(data)
+        ]
+
+        tree = self.create_table(parent, columns, headers, table_data, tooltips=tooltips)
         tree.pack(fill=tk.X, padx=5, pady=5)
 
+    def convert_time_to_seconds(self, time_str):
+        """
+        Convertit un temps au format HH:MM:SS en secondes,
+        en gérant les temps supérieurs à 24h
+        """
+        try:
+            # Diviser le temps en heures, minutes, secondes
+            hours, minutes, seconds = map(int, time_str.split(':'))
 
-    def fill_sections_tab(self):
-        frame = ctk.CTkFrame(self.tab_sections)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            # Calculer le total en secondes
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            return total_seconds
+        except Exception as e:
+            print(f"Erreur lors de la conversion du temps {time_str}: {e}")
+            return None
 
-        # Meilleures performances par section
-        sections_frame = ctk.CTkFrame(frame)
-        sections_frame.pack(fill=tk.X, padx=5, pady=5)
-        ctk.CTkLabel(sections_frame, text="Meilleures performances par section",
-                     font=("Arial", 16, "bold")).pack(pady=5)
+    def update_section_display(self):
+        """Mettre à jour l'affichage des performances par section"""
+        # Nettoyer l'affichage existant
+        for widget in self.section_results_scroll.winfo_children():
+            widget.destroy()
 
-        # Stocker les performances par section
-        section_performances = {}
+        selected_race = self.race_selector.get()
+        selected_section = self.section_selector.get()
+        if not selected_section or selected_section not in self.sections_info:
+            return
+
+        # Utiliser les informations correctes de la section
+        section_info = self.sections_info[selected_section]
 
         for bib in self.bibs:
             if str(bib) in self.scraper.all_data:
                 data = self.scraper.all_data[str(bib)]
-                checkpoints = data['checkpoints']
+                if selected_race == "Toutes les courses" or data['infos']['race_name'] == selected_race:
+                    checkpoints = data['checkpoints']
 
-                for i in range(len(checkpoints) - 1):
-                    try:
-                        # Identifier la section
-                        section_name = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
+                    for i in range(len(checkpoints) - 1):
+                        section = f"{checkpoints[i]['point']} → {checkpoints[i + 1]['point']}"
+                        if section == selected_section:
+                            try:
+                                # Utiliser les dénivelés corrects stockés
+                                if section_info is None:
+                                    section_info = {
+                                        'name': section,
+                                        'distance': checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'],
+                                        'elevation_gain': checkpoints[i + 1]['elevation_gain'],
+                                        'elevation_loss': checkpoints[i + 1]['elevation_loss']
+                                    }
 
-                        # Calculer le temps de la section
-                        time1 = datetime.strptime(checkpoints[i]['race_time'], "%H:%M:%S")
-                        time2 = datetime.strptime(checkpoints[i + 1]['race_time'], "%H:%M:%S")
-                        section_time = (time2 - time1).total_seconds() / 60  # en minutes
+                                # Le reste du code pour le calcul des temps et vitesses
+                                time1_seconds = self.convert_time_to_seconds(checkpoints[i]['race_time'])
+                                time2_seconds = self.convert_time_to_seconds(checkpoints[i + 1]['race_time'])
 
-                        # Caractéristiques de la section
-                        distance = (checkpoints[i + 1]['kilometer'] - checkpoints[i]['kilometer'])
-                        elevation_gain = checkpoints[i]['elevation_gain']
-                        elevation_loss = checkpoints[i]['elevation_loss']
+                                if time1_seconds is None or time2_seconds is None:
+                                    continue
 
-                        if section_name not in section_performances:
-                            section_performances[section_name] = {
-                                'distance': distance,
-                                'elevation_gain': elevation_gain,
-                                'elevation_loss': elevation_loss,
-                                'performances': []
-                            }
+                                section_time = time2_seconds - time1_seconds
+                                if section_time <= 0:  # Ignorer les sections avec temps négatif ou nul
+                                    continue
 
-                        section_performances[section_name]['performances'].append({
-                            'bib': bib,
-                            'name': data['infos']['name'],
-                            'time': section_time,
-                            'speed': float(checkpoints[i]['speed'].replace('km/h', '')),
-                            'effort_speed': float(checkpoints[i]['effort_speed'].replace('km/h', ''))
-                        })
+                                # Calculer la vitesse classique
+                                hours = section_time / 3600
+                                speed = section_info['distance'] / hours if hours > 0 else 0
 
-                    except:
-                        continue
+                                # Calculer la vitesse effort avec la nouvelle formule
+                                effort_speed = self.calculate_effort_speed(
+                                    distance=section_info['distance'],
+                                    time_seconds=section_time,
+                                    elevation_gain=section_info['elevation_gain'],
+                                    elevation_loss=section_info['elevation_loss']
+                                )
 
-        # Créer un sous-onglet pour chaque section significative
-        notebook = ttk.Notebook(sections_frame)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+                                # Déterminer la tendance de la section
+                                total_distance_m = section_info['distance'] * 1000
+                                if total_distance_m > 0:
+                                    elevation_ratio = (section_info['elevation_gain'] - section_info[
+                                        'elevation_loss']) / total_distance_m
+                                    if elevation_ratio > 0.05:  # >5% montée
+                                        tendency = "↗️"
+                                    elif elevation_ratio < -0.05:  # >5% descente
+                                        tendency = "↘️"
+                                    else:
+                                        tendency = "➡️"
+                                else:
+                                    tendency = "➡️"
 
-        for section_name, section_data in section_performances.items():
-            if len(section_data['performances']) > 0:
-                # Créer un onglet pour la section
-                section_frame = ttk.Frame(notebook)
-                notebook.add(section_frame, text=section_name)
+                                # Progression sur la section
+                                rank1 = int(checkpoints[i]['rank']) if checkpoints[i]['rank'] else 0
+                                rank2 = int(checkpoints[i + 1]['rank']) if checkpoints[i + 1]['rank'] else 0
+                                progression = rank1 - rank2 if rank1 and rank2 else 0
 
-                # En-tête avec les informations de la section
-                header_text = (
-                    f"Distance: {section_data['distance']:.1f}km | "
-                    f"D+: {section_data['elevation_gain']}m | "
-                    f"D-: {section_data['elevation_loss']}m"
+                                section_performances.append({
+                                    'bib': bib,
+                                    'name': data['infos']['name'],
+                                    'race': data['infos']['race_name'],
+                                    'time': section_time,
+                                    'speed': speed,
+                                    'effort_speed': effort_speed,
+                                    'progression': progression,
+                                    'start_rank': rank1,
+                                    'end_rank': rank2,
+                                    'tendency': tendency
+                                })
+                            except Exception as e:
+                                print(f"Erreur lors du calcul des performances: {e}")
+                                continue
+
+        if section_info:
+            # Créer la carte d'information de la section
+            self.create_section_info_card(self.section_results_scroll, section_info)
+
+            # 1. Classement par temps
+            section_performances.sort(key=lambda x: x['time'])
+            self.create_section_performance_table(
+                self.section_results_scroll,
+                section_performances[:20],
+                "Top 20 temps sur la section",
+                'time'
+            )
+
+            # 2. Classement par vitesse (avec tendance)
+            section_performances.sort(key=lambda x: x['speed'], reverse=True)
+            self.create_section_performance_table(
+                self.section_results_scroll,
+                section_performances[:20],
+                "Top 20 vitesses sur la section",
+                'speed'
+            )
+
+            # 3. Classement par vitesse effort (avec tendance)
+            section_performances.sort(key=lambda x: x['effort_speed'], reverse=True)
+            self.create_section_performance_table(
+                self.section_results_scroll,
+                section_performances[:20],
+                "Top 20 vitesses effort sur la section",
+                'effort'
+            )
+
+            # 4. Classement par progression
+            section_performances.sort(key=lambda x: x['progression'], reverse=True)
+            self.create_section_performance_table(
+                self.section_results_scroll,
+                section_performances[:20],
+                "Top 20 progressions sur la section",
+                'progression'
+            )
+
+    def calculate_effort_speed(self, distance, time_seconds, elevation_gain, elevation_loss):
+        """
+        Calcule la vitesse effort en prenant en compte le dénivelé
+
+        La formule utilisée est :
+        Vitesse effort = (distance + (D+ * facteur_montée) + (D- * facteur_descente)) / temps
+
+        Où:
+        - facteur_montée = 10 (100m de D+ équivaut à 1km de distance)
+        - facteur_descente = 2 (100m de D- équivaut à 0.2km de distance)
+        """
+        if time_seconds == 0:
+            return 0
+
+        # Conversion des dénivelés en kilomètres équivalents
+        elevation_gain_factor = 10  # 1000m D+ = 10km de distance
+        elevation_loss_factor = 2  # 1000m D- = 2km de distance
+
+        equivalent_distance = (
+                distance +  # Distance réelle
+                (elevation_gain / 1000 * elevation_gain_factor) +  # Distance équivalente montée
+                (elevation_loss / 1000 * elevation_loss_factor)  # Distance équivalente descente
+        )
+
+        hours = time_seconds / 3600
+        effort_speed = equivalent_distance / hours
+
+        return effort_speed
+
+    def create_section_performance_table(self, parent, data, title, performance_type):
+        """Créer un tableau de performances pour une section spécifique avec tendance"""
+        if not data:
+            return
+
+        frame = ctk.CTkFrame(parent)
+        frame.pack(fill=tk.X, padx=5, pady=10)
+
+        tooltips = {
+            "performance": {
+                'time': (
+                    "Temps réel mis pour parcourir la section.\n"
+                    "Calculé comme la différence entre les temps de passage aux deux points.\n"
+                    "Inclut les temps d'arrêt éventuels."
+                ),
+                'speed': (
+                    "Vitesse moyenne réelle sur la section.\n"
+                    "Calculée avec : Distance / Temps total\n"
+                    "Ne prend pas en compte le dénivelé."
+                ),
+                'effort': (
+                    "Vitesse effort qui normalise la performance selon le terrain.\n"
+                    "Calculée en prenant en compte :\n"
+                    "- La distance réelle\n"
+                    "- Le dénivelé positif (facteur 10)\n"
+                    "- Le dénivelé négatif (facteur 2)\n"
+                    "Permet de comparer les performances sur des terrains différents."
+                ),
+                'progression': (
+                    "Évolution du classement sur la section.\n"
+                    "Nombre de places gagnées (valeur positive)\n"
+                    "ou perdues (valeur négative)."
                 )
-                ttk.Label(section_frame, text=header_text).pack(pady=5)
+            }[performance_type],
+            "tendency": "Indication du profil de la section:\n↗️ Montée (>5%)\n➡️ Plat\n↘️ Descente (>5%)"
+        }
 
-                # Trier les performances par temps
-                performances = section_data['performances']
-                performances.sort(key=lambda x: x['time'])
+        ctk.CTkLabel(
+            frame,
+            text=title + " (Clic droit sur les en-têtes pour plus d'informations)",
+            font=("Arial", 14, "bold")
+        ).pack(pady=5)
 
-                # Créer le tableau des performances
-                columns = ["rank", "bib", "name", "time", "speed", "effort_speed"]
-                headers = {
-                    "rank": "Pos",
-                    "bib": "Dossard",
-                    "name": "Nom",
-                    "time": "Temps",
-                    "speed": "Vitesse (km/h)",
-                    "effort_speed": "Vitesse effort (km/h)"
-                }
+        columns = ["rank", "bib", "name", "race", "performance", "tendency"]
+        headers = {
+            "rank": "Position",
+            "rank_width": 80,
+            "bib": "Dossard",
+            "bib_width": 80,
+            "name": "Nom",
+            "name_width": 200,
+            "race": "Course",
+            "race_width": 150,
+            "performance": {
+                'time': "Temps",
+                'speed': "Vitesse",
+                'effort': "Vitesse effort",
+                'progression': "Progression"
+            }[performance_type],
+            "performance_width": 150,
+            "tendency": "Tendance",
+            "tendency_width": 80
+        }
 
-                data = [
-                    (
-                        i + 1,
-                        perf['bib'],
-                        perf['name'],
-                        f"{int(perf['time'] // 60)}h{int(perf['time'] % 60):02d}",
-                        f"{perf['speed']:.1f}",
-                        f"{perf['effort_speed']:.1f}"
-                    )
-                    for i, perf in enumerate(performances[:10])
-                ]
+        def format_performance(item):
+            if performance_type == 'time':
+                minutes = item['time'] / 60
+                return f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
+            elif performance_type == 'speed':
+                return f"{item['speed']:.1f} km/h"
+            elif performance_type == 'effort':
+                return f"{item['effort_speed']:.1f} km/h"
+            elif performance_type == 'progression':
+                return f"+{item['progression']}" if item['progression'] > 0 else str(item['progression'])
 
-                tree = self.create_table(section_frame, columns, headers, data)
-                tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        table_data = [
+            (
+                i + 1,
+                item['bib'],
+                item['name'],
+                item['race'],
+                format_performance(item),
+                item.get('tendency', '➡️')
+            )
+            for i, item in enumerate(data)
+        ]
+
+        tree = self.create_table(frame, columns, headers, table_data, tooltips=tooltips)
+        tree.pack(fill=tk.X, padx=5, pady=5)
+
 
 
 
