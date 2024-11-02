@@ -1,8 +1,5 @@
 // data.js
 window.raceData =
-
-
-
 {
     "548": {
         "infos": {
@@ -11086,4 +11083,4 @@ window.raceData =
             }
         ]
     }
-};
+}
